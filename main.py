@@ -3,7 +3,6 @@
 import sys
 
 import time
-
 import operator
 
 class BUS(object):
@@ -13,26 +12,26 @@ class BUS(object):
     def attach(self, device, addr_lo, addr_hi):
         if not isinstance(device, BUS_OBJECT):
             raise TypeError()
-        if device.bus_attached:
+        if device.bus is not None:
             raise Exception("Bus object already attached")
 
         device.bus_addr_lo = addr_lo
         device.bus_addr_hi = addr_hi
         self.devices.append(device)
         self.devices.sort(key=lambda d: d.bus_addr_lo)
-        device.bus_attached = True
+        device.bus = self
         # TODO: ensure no overlap
 
     def read(self, addr):
         for device in self.devices:
             if device.bus_addr_lo <= addr <= device.bus_addr_hi:
-                return device.read(addr - device.bus_addr_lo)
+                return device.bus_read(addr - device.bus_addr_lo)
         raise Exception("Read from HiZ address 0x%04lX" % addr)
 
     def write(self, addr, value):
         for device in self.devices:
             if device.bus_addr_lo <= addr <= device.bus_addr_hi:
-                device.write(addr - device.bus_addr_lo, value)
+                device.bus_write(addr - device.bus_addr_lo, value)
                 return
         raise Exception("Write to HiZ address 0x%04lX" % addr)
 
@@ -48,12 +47,12 @@ class BUS_OBJECT(object):
     def __init__(self):
         self.bus_addr_lo = None
         self.bus_addr_hi = None
-        self.bus_attached = False
+        self.bus = None
 
-    def read(self, addr):
+    def bus_read(self, addr):
         raise Exception("Unimplemented")
 
-    def write(self, addr, value):
+    def bus_write(self, addr, value):
         raise Exception("Unimplemented")
 
 
@@ -69,7 +68,7 @@ class ROM(BUS_OBJECT):
             except:
                 pass
 
-    def read(self, addr):
+    def bus_read(self, addr):
         return self.rom_bytes[addr]
 
 
@@ -78,15 +77,16 @@ class RAM(BUS_OBJECT):
         super(RAM, self).__init__()
         self.ram_bytes = [0x00]*size
 
-    def read(self, addr):
+    def bus_read(self, addr):
         return self.ram_bytes[addr]
 
-    def write(self, addr, value):
+    def bus_write(self, addr, value):
         self.ram_bytes[addr] = value
 
 
-class REG(object):
+class REG(BUS_OBJECT):
     def __init__(self, name, size=8, init=0):
+        super(REG, self).__init__()
         self.name = name
         self.size = size
         self.value = init
@@ -104,18 +104,29 @@ class REG(object):
             self.value &= ~mask
             self.value |= value & mask
 
+    def bus_read(self, addr):
+        return self.read()
+
+    def bus_write(self, addr, value):
+        return self.write(value)
+
     def incr(self, delta):
         carry = False
         half_carry = False
         
         half_sum = (self.value & self.half_mask) + (delta & self.half_mask)
-        if half_sum & self.half_mask != 0:
+        if (half_sum & ~self.half_mask) != 0:
             half_carry = True
 
         self.value += delta
-        if self.value >= 2**self.size:
+        if (self.value & ~self.mask) != 0:
             carry = True
         self.value &= self.mask
+
+        if delta < 0:
+            # If this was a decr operation, change the carries into borrows
+            carry = not carry
+            half_carry = not half_carry
 
         return (carry, half_carry)
 
@@ -144,7 +155,9 @@ class FUSED_REG(object):
         lo_delta = delta & self.reg_lo.mask
         carry, _ = self.reg_lo.incr(lo_delta)
         
-        hi_delta = (delta >> self.reg_lo.size) + 1
+        hi_delta = (delta >> self.reg_lo.size)
+        if carry:
+            hi_delta += 1 if delta > 0 else -1
         carry, half_carry = self.reg_hi.incr(hi_delta)
 
         return (carry, half_carry)
@@ -159,7 +172,7 @@ class IMMEDIATE_REG(object):
         self.size = size
 
     def read(self):
-        if size == 8:
+        if self.size == 8:
             return self.cpu.bus.read(self.cpu.PC.read()+1)
         else:
             return self.cpu.bus.read_16(self.cpu.PC.read()+1)
@@ -190,8 +203,8 @@ class CPU(object):
         self.f = 4.194304e6
         self.T_cyc = 1 / self.f
 
-        # TODO: what is the initital value for this?
-        self._interrupts_enabled = True
+        # TODO: fill in initial values for everything (see The PDF pg18)
+        self._IME = True
         self._stopped = False
         self._halted = False
 
@@ -255,15 +268,6 @@ class CPU(object):
             self.op_swap,
             lambda dst, from_memory: self.op_shift(dst, from_memory, False, False), # SRL
         ]
-
-    def set_interrupts(self, enable):
-        if enable:
-            self._interrupts_enabled = True
-        else: 
-            self._interrupts_enabled = False
-
-    def get_interrupts(self):
-        return self._interrupts_enabled
 
     def op_nop(self):
         self.PC.incr(1)
@@ -578,6 +582,7 @@ class CPU(object):
         r8 = self.bus.read(self.PC.read()+1)
         if (r8 & 0x80) != 0:
             r8 |= 0xFF00
+        self.PC.incr(2)
         self.PC.incr(r8)
         return 12
 
@@ -588,6 +593,7 @@ class CPU(object):
             r8 = self.bus.read(self.PC.read()+1)
             if (r8 & 0x80) != 0:
                 r8 |= 0xFF00
+            self.PC.incr(2)
             self.PC.incr(r8)
             return 12
         else:
@@ -597,7 +603,7 @@ class CPU(object):
     def op_ret(self, conditional_idx, enable_interrupts):
         if conditional_idx is None or self.cc[conditional_idx]():
             if enable_interrupts:
-                self.set_interrupts(True)
+                self._IME = True
             self.PC.write(self.bus.read_16(self.SP.read()))
             self.SP.incr(2)
             # TODO: color matrix says unconditional ret is 16, pdf says 8
@@ -628,12 +634,12 @@ class CPU(object):
 
     def op_change_interrupts_delayed(self, enabled):
         # TODO: how to do the delay part?
-        self.set_interrupts(enabled)
+        self._IME = enabled
         self.PC.incr(1)
         return 4
 
     def op_halt(self):
-        if self.get_interrupts():
+        if self._IME:
             self._halted = True
             self.PC.incr(1)
         else:
@@ -701,7 +707,7 @@ class CPU(object):
     def op_compare(self, operand, from_memory):
         # NB: if we ever code interrupts based on register modification, this
         # may cause false positives
-        old_a = SELF.A.read()
+        old_a = self.A.read()
         cycles = self.op_add(operand, from_memory, False, True)
         self.A.write(old_a)
         return cycles
@@ -793,9 +799,9 @@ class CPU(object):
             if z == 6 and y == 6:
                 return self.op_halt
             elif z == 6:
-                return lambda: self.mem_load_indirect(self.HL, self.r[y])
+                return lambda: self.op_mem_load_indirect(self.HL, self.r[y])
             elif y == 6:
-                return lambda: self.mem_store_indirect(self.HL, self.r[z])
+                return lambda: self.op_mem_store_indirect(self.HL, self.r[z])
             else:
                 return lambda: self.op_ld(self.r[y], self.r[z])
         elif x == 2:
@@ -890,12 +896,137 @@ class CPU(object):
 
         raise CPUOpcodeException(opcode)
 
+    def service_interrupts(self):
+        # TODO: pull out magic numbers
+        # TODO: investigate hardware behavior if IF bits 5-7
+        # are set (undefined interrupts :o ??)
+        if self._IME:
+            IE = self.bus.read(0xFFFF)
+            IF = self.bus.read(0xFF0F)
+            interrupts = IE & IF
+            if interrupts != 0:
+                for idx in xrange(8):
+                    interrupt_mask = 1 << idx
+                    if (interrupts & interrupt_mask) != 0:
+                        # Clear serviced IRQ and disable interrupts
+                        self.bus.write(0xFF0F, IF & ~interrupt_mask)
+                        self._IME = False
+
+                        # Push PC onto stack
+                        self.SP.incr(-2)
+                        self.bus.write_16(self.SP.read(),self.PC.read())
+
+                        # Jump to handler!
+                        self.PC.write(0x40 + 8*idx)
+                        return 5
+            return 0
+        else:
+            return 0
+
+
+class TIMER(BUS_OBJECT):
+    def __init__(self):
+        super(TIMER, self).__init__()
+        self.tick = 0.0
+        self.clock = 0
+
+        self.div_tick = 0.0
+        self.div_clock = 0
+        
+        self.enabled = 0
+        self.speed_select = 0
+        
+        self.frequencies = [4096,262144,65536,16384]
+        self.periods = [1.0/f for f in self.frequencies]
+
+        self.load_value = 0
+
+        # ok why is the div register in the *middle* of the selectable
+        # frequency spectrum? time to break out the PLL textbook...
+        self.div_T = self.periods[3]
+
+        # TODO: it would be fun to implement this with everything deriving from
+        # one reference clock and all the obscure glitch behavior described by
+        # the pandocs wiki
+
+    def advance(self, delta):
+        # Note that delta is **SIMULATED** time
+        if self.enabled == 1:
+            T = self.periods[self.speed_select]
+            self.tick += delta
+            if self.tick >= T:
+                self.tick -= T
+                self.clock += 1
+                if self.clock > 255:
+                    self.clock = self.load_value
+                    # Trigger an interrupt
+                    # TODO: pull these magic numbers out somewhere
+                    IF_state = self.bus.read(0xFF0F)
+                    IF_state |= 0x4
+                    self.bus.write(0xFF0F, IF_state)
+
+        self.div_tick += delta
+        if self.div_tick >= self.div_T:
+            self.div_tick -= self.div_T
+            self.div_clock += 1
+            self.div_clock &= 0xFF
+
+    def bus_read(self, addr):
+        if addr == 0: # DIV
+            return self.div_clock
+        elif addr == 1: # TIMA
+            return self.clock
+        elif addr == 2: # TMA
+            return self.load_value
+        elif addr == 3: # TAC
+            val = self.enabled << 2
+            val |= self.speed_select
+        else:
+            raise Exception("timer doesn't know WHAT the fuck to do")
+
+    def bus_write(self, addr, value):
+        if addr == 0: # DIV
+            self.div_clock = 0
+            self.clock = 0
+        elif addr == 1: # TIMA
+            self.clock = value & 0xFF
+        elif addr == 2: # TMA
+            self.load_value = value & 0xFF
+        elif addr == 3: # TAC
+            self.enabled = (value & 0x4) != 0
+            self.speed_select = value & 0x3
+        else:
+            raise Exception("timer doesn't know WHAT the fuck to do")
+
+class JOYPAD(BUS_OBJECT):
+    def __init__(self):
+        super(JOYPAD, self).__init__()
+        # TODO: everything
+
+    def bus_read(self, addr):
+        if addr == 0:
+            pass
+        else:
+            raise Exception("joypad doesn't know WHAT the fuck to do")
+
+    def bus_write(self, addr, value):
+        if addr == 0:
+            pass
+        else:
+            raise Exception("joypad doesn't know WHAT the fuck to do")
+
 if __name__=="__main__":
     if len(sys.argv) < 2:
-        print "Usage: %s ROMFILE" % sys.argv[0]
+        print "Usage: %s [-v] ROMFILE" % sys.argv[0]
         sys.exit(1)
 
+    if "-v" in sys.argv:
+        verbose = True
+    else:
+        verbose = False
+
     with open(sys.argv[1], "rb") as f:
+        print "Building system"
         bus = BUS()
 
         rom = ROM(f)
@@ -908,42 +1039,62 @@ if __name__=="__main__":
         hram = RAM(127)
         bus.attach(hram, 0xFF80, 0xFFFE)
 
-        cpu = CPU(bus)
+        joypad = JOYPAD()
+        bus.attach(joypad, 0xFF00, 0xFF00)
 
+        if_reg = REG("IF", 8)
+        bus.attach(if_reg, 0xFF0F, 0xFF0F)
+        
+        ie_reg = REG("IE", 8)
+        bus.attach(ie_reg, 0xFFFF, 0xFFFF)
+
+        timer = TIMER()
+        bus.attach(timer, 0xFF04, 0xFF07)
+
+        cpu = CPU(bus)
+        
+        print "Starting execution"
+
+        n_instr = 0
+        n_cyc = 0
+        T_start = time.time()
         while not cpu._stopped:
-            rT_start = time.clock()
-            print "------------"
-            print "PC 0x%04X" % cpu.PC.read()
             opcode = bus.read(cpu.PC.read())
-            print "op 0x%02X" % opcode
             op = cpu.decode(opcode)
             cycles = op()
+            
+            # TODO: not sure where/when/how often to do this, putting it here
+            # for now so we only have to call timer.advance() once:
+            cycles += cpu.service_interrupts()
+
             T_op = cpu.T_cyc * cycles
+
+            timer.advance(T_op)
 
             # TODO: double-check signed arithmetic everywhere. does C/H work
             # as borrow flags when doing SUB/DEC/etc?
 
-            for reg in cpu.r + [cpu.FLAG]:
-                if not reg:
-                    continue
-                print "%s:\t0x%s " % (reg.name, hex(reg.read())[2:].rjust(reg.size/4,"0")),
-                if reg.name == "FLAG":
-                    if reg.read() & cpu.FLAG_C:
-                        print "C",
-                    if reg.read() & cpu.FLAG_Z:
-                        print "Z",
-                    if reg.read() & cpu.FLAG_N:
-                        print "N",
-                    if reg.read() & cpu.FLAG_H:
-                        print "H",
-                
-                print ""
+            if verbose:
+                print "PC 0x%04X" % cpu.PC.read()
+                print "op 0x%02X" % opcode
+                for reg in cpu.r + [cpu.FLAG]:
+                    if not reg:
+                        continue
+                    print "%s:\t0x%s " % (reg.name, hex(reg.read())[2:].rjust(reg.size/4,"0")),
+                    if reg.name == "FLAG":
+                        if reg.read() & cpu.FLAG_C:
+                            print "C",
+                        if reg.read() & cpu.FLAG_Z:
+                            print "Z",
+                        if reg.read() & cpu.FLAG_N:
+                            print "N",
+                        if reg.read() & cpu.FLAG_H:
+                            print "H",                
+                    print ""
+                print "------------"
 
-            rT_finish = time.clock()
-            rT_idle = (rT_start + T_op) - rT_finish
-            print rT_start, T_op, rT_finish, rT_finish - rT_start
-            if rT_idle > 0:
-                print "Sleeping %f s" % rT_idle
-                time.sleep(rT_idle)
-
+            n_instr += 1
+            n_cyc += 1
+        T_end = time.time()
+        print "Executed %i instructions in %f seconds (%f simulated)" % (n_instr, T_end-T_start, n_cyc*cpu.T_cyc)
 
