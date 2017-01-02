@@ -215,12 +215,15 @@ class CPU(object):
         self.PC.incr(1)
         return 8
 
-    def op_mem_store(self, src, addr_offset=0):
-        addr = self.bus.read_16(self.PC.read()+1)
+    def op_mem_store(self, dst, src, addr_offset=0):
+        # TODO: combine this with op_mem_store_indirect - the only real
+        # difference is the PC incr at the end
+        addr = dst.read()
+        print hex(addr), hex(addr_offset), hex(addr+addr_offset)
         addr += addr_offset
         addr &= 0xFFFF
         self.bus.write(addr, src.read())
-        self.PC.incr(3)
+        self.PC.incr(1+dst.size/8)
         return 12 if src is not self.A else 16
 
     def op_mem_store_sp(self):
@@ -731,7 +734,7 @@ class CPU(object):
                 if y <= 3:
                     return lambda: self.op_ret(y, False)
                 elif y == 4:
-                    return lambda: self.op_mem_store(self.A, 0xFF00)
+                    return lambda: self.op_mem_store(self.IMMEDIATE_8, self.A, 0xFF00)
                 elif y == 5:
                     return self.op_add_sp
                 elif y == 6:
@@ -758,7 +761,7 @@ class CPU(object):
                     # whether to trust that or not
                     return lambda: self.op_mem_store_indirect(self.C, self.A, 0, 0xFF00)
                 elif y == 5:
-                    return lambda: self.op_mem_store(self.A)
+                    return lambda: self.op_mem_store(self.IMMEDIATE_16, self.A)
                 elif y == 6:
                     # TODO: color matrix says this is a 2 byte intsr, not sure
                     # whether to trust that or not
@@ -812,6 +815,27 @@ class CPU(object):
             return lambda: self.op_bit_modify(y, self.r[z], False, from_memory)
 
         raise CPUOpcodeException(opcode)
+
+    def core_dump(self):
+        out = []
+        # TODO: make sure these bus/reg reads don't have side effects
+        out.append("PC 0x%04X" % self.PC.read())
+        out.append("op 0x%02X" % self.bus.read(self.PC.read()))
+        out.append("imm 0x%04X" % self.bus.read_16(self.PC.read()+1))
+        for reg in self.r + [self.FLAG]:
+            if not reg:
+                continue
+            out.append("%s:\t0x%s " % (reg.name, hex(reg.read())[2:].rjust(reg.size/4,"0")))
+            if reg.name == "FLAG":
+                if reg.read() & self.FLAG_C:
+                    out[-1] += "C "
+                if reg.read() & self.FLAG_Z:
+                    out[-1] += "Z "
+                if reg.read() & self.FLAG_N:
+                    out[-1] += "N "
+                if reg.read() & self.FLAG_H:
+                    out[-1] += "H "
+        return "\n".join(out)
 
     def service_interrupts(self):
         # TODO: pull out magic numbers

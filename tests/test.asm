@@ -23,16 +23,22 @@ JP $150
 
 .ORG $150
 
-; Timer interrupt test
+; Joypad test
 
-.ORG $50
+LD HL, $FF00
+joy_loop:
+LD (HL), $18 ; Enable button readout
+NOP
+LD A, (HL) ; Sample buttons
+BIT 3, A ; Is START pressed?
+JP Z, exit
+JP joy_loop
+
+exit:
 STOP
 
-.ORG $150
 
 EI
-LD HL, $FFFF
-LD (HL), $04
 LD HL, $FF04
 LD (HL), 0 
 LD HL, $FF07

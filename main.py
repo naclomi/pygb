@@ -2,6 +2,7 @@
 # TODO: rename everything leomulator
 import sys
 
+import pygame
 import time
 import bus
 import cpu
@@ -111,19 +112,72 @@ class TIMER(bus.BUS_OBJECT):
 class JOYPAD(bus.BUS_OBJECT):
     def __init__(self):
         super(JOYPAD, self).__init__()
-        # TODO: everything
+        self.direction_select = False
+        self.button_select = False
+        self.directions = 0x0F
+        self.buttons = 0x0F
+
+        self.direction_idx = {
+            "right": 0,
+            "left": 1,
+            "up": 2,
+            "down": 3,
+        }
+        self.button_idx = {
+            "a": 0,
+            "b": 1,
+            "select": 2,
+            "start": 3,
+        }
+  
+    def update(self, keys):
+        changed = False
+        for key, idx in self.direction_idx.items():
+            if key in keys:
+                if keys[key]:
+                    self.directions &= ~(1 << idx)
+                else:
+                    self.directions |= 1 << idx
+                changed = True
+        for key, idx in self.button_idx.items():
+            if key in keys:
+                if keys[key]:
+                    self.buttons &= ~(1 << idx)
+                else:
+                    self.buttons |= 1 << idx
+                changed = True
+
+        if changed:
+            # Trigger an interrupt
+            # This is technically only supposed to happen on high-to-low
+            # transitions but because the real hardware buttons aren't
+            # debounced it effectively happens on both button press and
+            # release
+            # TODO: pull these magic numbers out somewhere
+            IF_state = self.bus.read(0xFF0F)
+            IF_state |= 0x10
+            self.bus.write(0xFF0F, IF_state)
 
     def bus_read(self, addr):
         if addr == 0:
-            pass
+            val = 0
+            val |= self.button_select << 5
+            val |= self.direction_select << 4
+            if not self.direction_select:
+                val |= self.directions
+            if not self.button_select:
+                val |= self.buttons
+            return val
         else:
             raise Exception("joypad doesn't know WHAT the fuck to do")
 
     def bus_write(self, addr, value):
         if addr == 0:
-            pass
+            self.button_select = (value & (1 << 5)) != 0
+            self.direction_select = (value & (1 << 4)) != 0
         else:
             raise Exception("joypad doesn't know WHAT the fuck to do")
+
 
 if __name__=="__main__":
     if len(sys.argv) < 2:
@@ -134,6 +188,9 @@ if __name__=="__main__":
         verbose = True
     else:
         verbose = False
+
+    window = pygame.display.set_mode((160*2, 144*2)) 
+    pygame.key.set_repeat(10, 10)
 
     with open(sys.argv[1], "rb") as f:
         print "Building system"
@@ -169,39 +226,54 @@ if __name__=="__main__":
         n_cyc = 0
         T_start = time.time()
         while not syscpu._stopped:
-            opcode = sysbus.read(syscpu.PC.read())
-            op = syscpu.decode(opcode)
-            cycles = op()
-            
-            # TODO: not sure where/when/how often to do this, putting it here
-            # for now so we only have to call timer.advance() once:
-            cycles += syscpu.service_interrupts()
+            try:
+                # TODO: double-check signed arithmetic everywhere. does C/H work
+                # as borrow flags when doing SUB/DEC/etc?
+                opcode = sysbus.read(syscpu.PC.read())
+                op = syscpu.decode(opcode)
+                cycles = op()
+                
+                # TODO: not sure where/when/how often to do this, putting it here
+                # for now so we only have to call timer.advance() once:
+                cycles += syscpu.service_interrupts()
 
-            T_op = syscpu.T_cyc * cycles
+                T_op = syscpu.T_cyc * cycles
+                timer.advance(T_op)
 
-            timer.advance(T_op)
+                # TODO: decompose this and allow for configurable keybindings
+                keys = {}
+                key_bindings = {
+                    pygame.K_LEFT: "left",
+                    pygame.K_RIGHT: "right",
+                    pygame.K_UP: "up",
+                    pygame.K_DOWN: "down",
+                    pygame.K_z: "a",
+                    pygame.K_x: "b",
+                    pygame.K_RETURN: "start",
+                    pygame.K_TAB: "select",
+                }
+                for event in pygame.event.get(): 
+                    if event.type == pygame.QUIT: 
+                        syscpu.op_stop()
+                    elif event.type == pygame.KEYDOWN:
+                        if event.key in key_bindings:
+                            keys[key_bindings[event.key]] = True
+                    elif event.type == pygame.KEYUP:
+                        if event.key in key_bindings:
+                            keys[key_bindings[event.key]] = False
+                if len(keys) > 0:
+                    joypad.update(keys)
 
-            # TODO: double-check signed arithmetic everywhere. does C/H work
-            # as borrow flags when doing SUB/DEC/etc?
-
-            if verbose:
-                print "PC 0x%04X" % syscpu.PC.read()
-                print "op 0x%02X" % opcode
-                for reg in syscpu.r + [syscpu.FLAG]:
-                    if not reg:
-                        continue
-                    print "%s:\t0x%s " % (reg.name, hex(reg.read())[2:].rjust(reg.size/4,"0")),
-                    if reg.name == "FLAG":
-                        if reg.read() & syscpu.FLAG_C:
-                            print "C",
-                        if reg.read() & syscpu.FLAG_Z:
-                            print "Z",
-                        if reg.read() & syscpu.FLAG_N:
-                            print "N",
-                        if reg.read() & syscpu.FLAG_H:
-                            print "H",                
-                    print ""
+                if verbose:
+                    # TODO: core dump is showing 'next pc' and 'current regs'
+                    print syscpu.core_dump()
+                    print "------------"
+            except:
                 print "------------"
+                print "CORE DUMP"
+                print syscpu.core_dump()
+                print "------------"
+                raise
 
             n_instr += 1
             n_cyc += 1

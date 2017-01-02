@@ -44,9 +44,9 @@ class BUS_OBJECT(object):
         self.bus = None
 
     def bus_read(self, addr):
-        raise Exception("Unimplemented")
+        raise Exception("Unimplemented method %s.bus_read" % str(type(self)))
 
     def bus_write(self, addr, value):
-        raise Exception("Unimplemented")
+        raise Exception("Unimplemented method %s.bus_write" % str(type(self)))
 
 
