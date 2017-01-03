@@ -4,6 +4,7 @@ import sys
 
 import pygame
 import time
+import video
 import bus
 import cpu
 
@@ -189,7 +190,7 @@ if __name__=="__main__":
     else:
         verbose = False
 
-    window = pygame.display.set_mode((160*2, 144*2)) 
+    pygame.init()
     pygame.key.set_repeat(10, 10)
 
     with open(sys.argv[1], "rb") as f:
@@ -205,6 +206,8 @@ if __name__=="__main__":
 
         hram = RAM(127)
         sysbus.attach(hram, 0xFF80, 0xFFFE)
+
+        video_driver = video.VIDEO(sysbus)
 
         joypad = JOYPAD()
         sysbus.attach(joypad, 0xFF00, 0xFF00)
@@ -263,6 +266,8 @@ if __name__=="__main__":
                             keys[key_bindings[event.key]] = False
                 if len(keys) > 0:
                     joypad.update(keys)
+
+                video_driver.draw()
 
                 if verbose:
                     # TODO: core dump is showing 'next pc' and 'current regs'
