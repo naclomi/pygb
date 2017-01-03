@@ -1,0 +1,37 @@
+.MEMORYMAP
+SLOTSIZE $4000
+DEFAULTSLOT 1
+SLOT 0 $0000
+SLOT 1 $4000
+.ENDME
+
+.ROMBANKSIZE $4000
+.ROMBANKS 2
+
+.RAMSIZE 0
+.EMPTYFILL $DD
+.CARTRIDGETYPE 1
+.COMPUTECHECKSUM
+.COMPUTECOMPLEMENTCHECK
+
+;***********************************
+
+.BANK 0 SLOT 0
+.ORG $100
+NOP
+JP $150
+
+.ORG $150
+
+; Joypad test
+
+LD HL, $FF00
+joy_loop:
+LD (HL), $18 ; Enable button readout
+NOP
+LD A, (HL) ; Sample buttons
+BIT 3, A ; Is START pressed?
+JP Z, exit
+JP joy_loop
+exit:
+STOP

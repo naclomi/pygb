@@ -23,19 +23,63 @@ JP $150
 
 .ORG $150
 
-; Joypad test
+; SCX/SCY test
 
-LD HL, $FF00
 joy_loop:
-LD (HL), $18 ; Enable button readout
-NOP
-LD A, (HL) ; Sample buttons
-BIT 3, A ; Is START pressed?
+LD HL, $FF00
+LD (HL), $10 ; Enable button readout
+LD D, (HL) ; Sample buttons
+BIT 3, D ; Is START pressed?
 JP Z, exit
-JP joy_loop
+NOP
+LD (HL), $20 ; Enable DPAD readout
+LD D, (HL) ; Sample dpad
+BIT 0, D ; Right
+CALL Z, inc_scx
+BIT 1, D ; Left
+CALL Z, dec_scx
+BIT 2, D ; Up
+CALL Z, dec_scy
+BIT 3, D ; Down
+CALL Z, inc_scy
 
+JP joy_loop
 exit:
 STOP
+
+inc_scx:
+LD HL, $FF43
+LD A, (HL)
+INC A
+LD (HL), A
+RET
+
+dec_scx:
+LD HL, $FF43
+LD A, (HL)
+DEC A
+LD (HL), A
+RET
+
+inc_scy:
+LD HL, $FF42
+LD A, (HL)
+INC A
+LD (HL), A
+RET
+
+dec_scy:
+LD HL, $FF42
+LD A, (HL)
+DEC A
+LD (HL), A
+RET
+
+
+
+
+
+
 
 
 EI
