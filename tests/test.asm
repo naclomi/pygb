@@ -29,9 +29,12 @@ joy_loop:
 LD HL, $FF00
 LD (HL), $10 ; Enable button readout
 LD D, (HL) ; Sample buttons
-BIT 3, D ; Is START pressed?
+BIT 3, D ; START
 JP Z, exit
+BIT 0, D ; A
+CALL Z, flip_colors
 NOP
+LD HL, $FF00
 LD (HL), $20 ; Enable DPAD readout
 LD D, (HL) ; Sample dpad
 BIT 0, D ; Right
@@ -46,6 +49,14 @@ CALL Z, inc_scy
 JP joy_loop
 exit:
 STOP
+
+flip_colors:
+LD HL, $FF47
+LD A, (HL)
+LD B, $FF
+XOR B
+LD (HL), A
+RET
 
 inc_scx:
 LD HL, $FF43

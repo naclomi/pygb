@@ -19,13 +19,17 @@ class BUS(object):
     def read(self, addr):
         for device in self.devices:
             if device.bus_addr_lo <= addr <= device.bus_addr_hi:
-                return device.bus_read(addr - device.bus_addr_lo)
+                if device.bus_enabled:
+                    return device.bus_read(addr - device.bus_addr_lo)
+                else:
+                    return 0xFF
         raise Exception("Read from HiZ address 0x%04lX" % addr)
 
     def write(self, addr, value):
         for device in self.devices:
             if device.bus_addr_lo <= addr <= device.bus_addr_hi:
-                device.bus_write(addr - device.bus_addr_lo, value)
+                if device.bus_enabled:
+                    device.bus_write(addr - device.bus_addr_lo, value)
                 return
         raise Exception("Write to HiZ address 0x%04lX" % addr)
 
@@ -41,6 +45,7 @@ class BUS_OBJECT(object):
     def __init__(self):
         self.bus_addr_lo = None
         self.bus_addr_hi = None
+        self.bus_enabled = True
         self.bus = None
 
     def bus_read(self, addr):
