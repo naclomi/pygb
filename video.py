@@ -10,6 +10,19 @@ import pygame
 
 class VIDEO(object):
     def __init__(self, bus, scale=4):
+        self.T_mode2 = 19e-6
+        self.T_mode3 = 41e-6
+        self.T_mode0 = 48.6e-6
+        self.T_mode1 = 1.08e-3
+        self.T_refresh = (1/59.7)
+
+        self.T_mode2_edge = self.T_mode2
+        self.T_mode3_edge = self.T_mode2 + self.T_mode3
+        self.T_mode0_edge = self.T_mode2 + self.T_mode3 + self.T_mode0
+        self.T_scanline = self.T_mode0_edge
+
+        self.T_dma = 160e-6
+
         self.bus = bus
         self.scale = scale
 
@@ -41,6 +54,12 @@ class VIDEO(object):
         self.oam_tiles = [None] * 40
         self.update_bg_tiles()
         self.update_oam()
+
+        self.display_clock = 0.0
+        self.dma_clock = 0.0
+
+    def dma_active(self):
+        return self.dma_clock > 0
 
     def render_bitmap(self, tile, palette):
         bitmap = pygame.Surface((8*self.scale, len(tile) / 8 * self.scale), depth=8)
@@ -97,18 +116,18 @@ class VIDEO(object):
 
         if self.vregs.display_enable:
 
+            # Fill with color 0 before drawing low-priority sprites
             if self.vregs.bg_enable or self.vregs.window_enable:
                 self.update_bg_tiles()
+                # TODO: is this correct if bg is disabled and window is not
+                # at origin
+                self.window.fill(self.colors[self.vregs.bgp[0]])
 
             scx = self.vregs.scx
             scy = self.vregs.scy
             wx = self.vregs.wx
             wy = self.vregs.wy
             data_select = self.vregs.map_data
-
-            # Fill with color 0 before drawing low-priority sprites
-            if self.vregs.bg_enable:
-                self.window.fill(self.colors[self.vregs.bgp[0]])
 
             # Draw low-priority sprites
             if self.vregs.sprite_enable:
@@ -129,7 +148,6 @@ class VIDEO(object):
             # Draw background and window, with color 0 replaced with
             # transparency so we can see low-priority sprites as well
             if self.vregs.bg_enable:
-
                 if self.vregs.bg_map == 0:
                     tile_map = self.vram_map_0.map 
                 else:
@@ -212,10 +230,118 @@ class VIDEO(object):
 
         pygame.display.flip()
 
+    def advance(self, delta):
+        self.display_clock += delta
+
+        scan_clock = self.display_clock % self.T_scanline
+
+        # TODO: implement scanline redraw, reset-on-display-disable
+
+        if self.dma_active():
+            self.dma_clock -= delta
+            if self.dma_clock <= 0:
+                self.dma_clock = 0
+                self.vregs.dma_base = None
+        else:
+            if self.vregs.dma_base is not None:
+                self.dma_clock = self.T_dma
+                self.vram_oam.dma(self.vregs.dma_base)
+
+        if self.display_clock >= self.T_refresh:
+                self.draw()
+                self.display_clock -= self.T_refresh
+
+        if self.display_clock >= self.T_scanline * 144:
+            # V-Blank
+            if self.vregs.mode != 1:
+                self.vregs.mode = 1
+
+                self.vram_oam.bus_enabled = True
+                self.vram_tile.bus_enabled = True
+                self.vram_map_0.bus_enabled = True
+                self.vram_map_1.bus_enabled = True
+
+                if self.vregs.v_blank_int:
+                    # Trigger an interrupt
+                    # TODO: pull these magic numbers out somewhere
+                    IF_state = self.bus.read(0xFF0F)
+                    IF_state |= 0x1
+                    self.bus.write(0xFF0F, IF_state)
+        elif scan_clock <= self.T_mode2_edge:
+            # OAM
+            if self.vregs.mode != 2:
+                self.vregs.mode = 2
+
+                self.vram_oam.bus_enabled = False
+                self.vram_tile.bus_enabled = True
+                self.vram_map_0.bus_enabled = True
+                self.vram_map_1.bus_enabled = True
+
+                if self.vregs.oam_int:
+                    # Trigger an interrupt
+                    # TODO: pull these magic numbers out somewhere
+                    IF_state = self.bus.read(0xFF0F)
+                    IF_state |= 0x2
+                    self.bus.write(0xFF0F, IF_state)
+        elif scan_clock <= self.T_mode3_edge:
+            # OAM+VRAM
+            if self.vregs.mode != 3:
+                self.vregs.mode = 3
+
+                self.vram_oam.bus_enabled = False
+                self.vram_tile.bus_enabled = False
+                self.vram_map_0.bus_enabled = False
+                self.vram_map_1.bus_enabled = False
+        elif scan_clock <= self.T_mode0_edge:
+            # H-Blank
+            if self.vregs.mode != 0:
+                self.vregs.mode = 0
+
+                self.vram_oam.bus_enabled = True
+                self.vram_tile.bus_enabled = True
+                self.vram_map_0.bus_enabled = True
+                self.vram_map_1.bus_enabled = True
+
+                if self.vregs.h_blank_int:
+                    # Trigger an interrupt
+                    # TODO: pull these magic numbers out somewhere
+                    IF_state = self.bus.read(0xFF0F)
+                    IF_state |= 0x2
+                    self.bus.write(0xFF0F, IF_state)
+
+        # Update LY and check if we should trigger the coincidence interrupt
+        cur_ly = int(self.display_clock / self.T_scanline)
+        if self.vregs.ly != cur_ly:
+            self.vregs.ly = cur_ly
+        coincidence = self.vregs.ly == self.vregs.lyc
+        if coincidence != self.vregs.coincidence_flag:
+            self.vregs.coincidence_flag = coincidence
+            if coincidence and self.vregs.coincidence_int:
+                # Trigger an interrupt
+                # TODO: pull these magic numbers out somewhere
+                IF_state = self.bus.read(0xFF0F)
+                IF_state |= 0x2
+                self.bus.write(0xFF0F, IF_state)
+
 
 class VIDEO_REGS(bus.BUS_OBJECT):
     def __init__(self):
         super(VIDEO_REGS, self).__init__()
+
+        # STAT flags
+        self.mode = 0
+        self.coincidence_flag = 0
+        self.h_blank_int = 0
+        self.v_blank_int = 0
+        self.oam_int = 0
+        self.coincidence_int = 0
+
+        # LY coincidence
+        self.ly = 0
+        self.lyc = 0
+
+        # DMA request
+        self.dma_base = None
 
         # LCDC flags
         self.display_enable = 1
@@ -256,17 +382,24 @@ class VIDEO_REGS(bus.BUS_OBJECT):
             val |= self.bg_enable << 0
             return val
         elif addr == 1: # FF41 - STAT
-            pass
+            val = 0
+            val |= self.mode
+            val |= self.coincidence_flag << 2
+            val |= self.h_blank_int << 3
+            val |= self.v_blank_int << 4
+            val |= self.oam_int << 5
+            val |= self.coincidence_int << 6
+            return val
         elif addr == 2: # FF42 - SCY
             return self.scy
         elif addr == 3: # FF43 - SCX
             return self.scx
         elif addr == 4: # FF44 - LY
-            pass
+            return self.ly
         elif addr == 5: # FF45 - LYC
-            pass
+            return self.lyc
         elif addr == 6: # FF46 - DMA
-            pass
+            return self.dma_base if self.dma_base is not None else 0x00
         elif addr == 7: # FF47 - BGP
             return reduce(lambda x,y: x<<2 | y, reversed(self.bgp))
         elif addr == 8: # FF48 - OBP0
@@ -291,7 +424,10 @@ class VIDEO_REGS(bus.BUS_OBJECT):
             self.sprite_enable = ((value >> 1) & 0x1) != 0
             self.bg_enable = ((value >> 0) & 0x1) != 0
         elif addr == 1: # FF41 - STAT
-            pass
+            self.h_blank_int = ((value >> 3) & 0x1) != 0
+            self.v_blank_int = ((value >> 4) & 0x1) != 0
+            self.oam_int = ((value >> 5) & 0x1) != 0
+            self.coincidence_int = ((value >> 6) & 0x1) != 0
         elif addr == 2: # FF42 - SCY
             self.scy = value & 0xFF
         elif addr == 3: # FF43 - SCX
@@ -299,9 +435,9 @@ class VIDEO_REGS(bus.BUS_OBJECT):
         elif addr == 4: # FF44 - LY
             pass
         elif addr == 5: # FF45 - LYC
-            pass
+            self.lyc = value & 0xFF
         elif addr == 6: # FF46 - DMA
-            pass
+            self.dma_base = value << 8
         elif addr == 7: # FF47 - BGP
             self.bgp_changed = True
             self.bgp = map(lambda x: (value >> x) & 0x3, [0,2,4,6])
@@ -466,7 +602,14 @@ class VIDEO_OAM(bus.BUS_OBJECT):
         self.sprites[4].palette = 1
         self.sprites[4].priority = 0
 
-
+    def dma(self, dma_base):
+        ptr = dma_base
+        for sprite in self.sprites:
+            self.sprites.write(0, self.bus.read(ptr), force=True)
+            self.sprites.write(1, self.bus.read(ptr+1), force=True)
+            self.sprites.write(2, self.bus.read(ptr+2), force=True)
+            self.sprites.write(3, self.bus.read(ptr+3), force=True)
+            ptr += 4
 
     def bus_read(self, addr):
         return self.sprites[addr / 4].read(addr % 4)

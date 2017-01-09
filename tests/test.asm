@@ -46,7 +46,20 @@ CALL Z, dec_scy
 BIT 3, D ; Down
 CALL Z, inc_scy
 
+LD HL, $FF41
+vb_loop:
+LD A, (HL)
+AND $3
+CP 1
+JP NZ, vb_loop
+vb_exit_loop:
+LD A, (HL)
+AND $3
+CP 1
+JP Z, vb_exit_loop
+
 JP joy_loop
+
 exit:
 STOP
 

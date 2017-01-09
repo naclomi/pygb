@@ -16,19 +16,19 @@ class BUS(object):
         device.bus = self
         # TODO: ensure no overlap
 
-    def read(self, addr):
+    def read(self, addr, force=False):
         for device in self.devices:
             if device.bus_addr_lo <= addr <= device.bus_addr_hi:
-                if device.bus_enabled:
+                if device.bus_enabled or force:
                     return device.bus_read(addr - device.bus_addr_lo)
                 else:
                     return 0xFF
         raise Exception("Read from HiZ address 0x%04lX" % addr)
 
-    def write(self, addr, value):
+    def write(self, addr, value, force=False):
         for device in self.devices:
             if device.bus_addr_lo <= addr <= device.bus_addr_hi:
-                if device.bus_enabled:
+                if device.bus_enabled or force:
                     device.bus_write(addr - device.bus_addr_lo, value)
                 return
         raise Exception("Write to HiZ address 0x%04lX" % addr)

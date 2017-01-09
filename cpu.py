@@ -853,6 +853,10 @@ class CPU(object):
                         self.bus.write(0xFF0F, IF & ~interrupt_mask)
                         self._IME = False
 
+                        # Make sure to un-halt the CPU
+                        self._halted = False
+                        self._stopped = False
+
                         # Push PC onto stack
                         self.SP.incr(-2)
                         self.bus.write_16(self.SP.read(),self.PC.read())

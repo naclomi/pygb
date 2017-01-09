@@ -191,6 +191,7 @@ if __name__=="__main__":
         verbose = False
 
     pygame.init()
+    pygame.display.set_caption("pygb")
     pygame.key.set_repeat(10, 10)
 
     with open(sys.argv[1], "rb") as f:
@@ -232,10 +233,16 @@ if __name__=="__main__":
             try:
                 # TODO: double-check signed arithmetic everywhere. does C/H work
                 # as borrow flags when doing SUB/DEC/etc?
-                opcode = sysbus.read(syscpu.PC.read())
-                op = syscpu.decode(opcode)
-                cycles = op()
-                
+                # TODO: implement the STOP instruction correctly
+
+                if not syscpu._halted:
+                    opcode = sysbus.read(syscpu.PC.read())
+                    op = syscpu.decode(opcode)
+                    cycles = op()
+                else:
+                    # NOP if halted
+                    cycles = 1
+
                 # TODO: not sure where/when/how often to do this, putting it here
                 # for now so we only have to call timer.advance() once:
                 cycles += syscpu.service_interrupts()
@@ -267,7 +274,17 @@ if __name__=="__main__":
                 if len(keys) > 0:
                     joypad.update(keys)
 
-                video_driver.draw()
+                video_driver.advance(T_op)
+                # TODO: make sure this DMA blockade covers MBCs once they're
+                # implemented:
+                if video_driver.dma_active():
+                    rom.bus_enabled = False
+                    for ram_bank in ram:
+                        ram_bank.bus_enabled = False
+                else:
+                    rom.bus_enabled = True
+                    for ram_bank in ram:
+                        ram_bank.bus_enabled = True
 
                 if verbose:
                     # TODO: core dump is showing 'next pc' and 'current regs'
