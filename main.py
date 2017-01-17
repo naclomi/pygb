@@ -1,14 +1,20 @@
 #!/usr/bin/python
 # TODO: rename everything leomulator
-import sys
 
+# For the frontend
+import sys
 import pygame
 import time
-import video
-import bus
-import cpu
+import traceback
 
-class ROM(bus.BUS_OBJECT):
+# For the system
+import debug as gb_debug
+import video as gb_video
+import sound as gb_sound
+import bus as gb_bus
+import cpu as gb_cpu
+
+class ROM(gb_bus.BUS_OBJECT):
     def __init__(self, rom_bin):
         super(ROM, self).__init__()
         self.rom_bytes = []
@@ -20,11 +26,15 @@ class ROM(bus.BUS_OBJECT):
             except:
                 pass
 
+    def bus_write(self, addr, value):
+        # TODO: this function shouldn't exist - handle in an MBC class
+        print "WARNING: Write to ROM address 0x%04lx" % (addr+self.bus_addr_lo)
+
     def bus_read(self, addr):
         return self.rom_bytes[addr]
 
 
-class RAM(bus.BUS_OBJECT):
+class RAM(gb_bus.BUS_OBJECT):
     def __init__(self, size=2**16):
         super(RAM, self).__init__()
         self.ram_bytes = [0x00]*size
@@ -36,7 +46,7 @@ class RAM(bus.BUS_OBJECT):
         self.ram_bytes[addr] = value
 
 
-class TIMER(bus.BUS_OBJECT):
+class TIMER(gb_bus.BUS_OBJECT):
     def __init__(self):
         super(TIMER, self).__init__()
         self.tick = 0.0
@@ -60,6 +70,14 @@ class TIMER(bus.BUS_OBJECT):
         # TODO: it would be fun to implement this with everything deriving from
         # one reference clock and all the obscure glitch behavior described by
         # the pandocs wiki
+
+        self.reset()
+
+    def reset(self):
+        self.clock = 0
+        self.load_value = 0
+        self.enabled = 0
+        self.speed_select = 0
 
     def advance(self, delta):
         # Note that delta is **SIMULATED** time
@@ -110,7 +128,7 @@ class TIMER(bus.BUS_OBJECT):
         else:
             raise Exception("timer doesn't know WHAT the fuck to do")
 
-class JOYPAD(bus.BUS_OBJECT):
+class JOYPAD(gb_bus.BUS_OBJECT):
     def __init__(self):
         super(JOYPAD, self).__init__()
         self.direction_select = False
@@ -180,15 +198,126 @@ class JOYPAD(bus.BUS_OBJECT):
             raise Exception("joypad doesn't know WHAT the fuck to do")
 
 
+class GAMEBOY(object):
+    def __init__(self):
+        self.debug_trigger = False
+
+        self.bus = gb_bus.BUS()
+
+        self.rom = ROM(f)
+        # TODO: implement banks instead of fixing bank 2:
+        # self.bus.attach(self.rom, 0x0000, 0x3FFF)
+        self.bus.attach(self.rom, 0x0000, 0x7FFF)
+
+        self.ram = [RAM(4096), RAM(4096)]
+        self.bus.attach(self.ram[0], 0xC000, 0xCFFF)
+        self.bus.attach(self.ram[1], 0xD000, 0xDFFF)
+
+        self.hram = RAM(127)
+        self.bus.attach(self.hram, 0xFF80, 0xFFFE)
+
+        self.video_driver = gb_video.VIDEO(self.bus)
+        self.sound_driver = gb_sound.SOUND(self.bus)
+
+        self.joypad = JOYPAD()
+        self.bus.attach(self.joypad, 0xFF00, 0xFF00)
+
+        self.if_reg = gb_cpu.REG("IF", 8)
+        self.bus.attach(self.if_reg, 0xFF0F, 0xFF0F)
+        
+        self.ie_reg = gb_cpu.REG("IE", 8)
+        self.bus.attach(self.ie_reg, 0xFFFF, 0xFFFF)
+
+        self.timer = TIMER()
+        self.bus.attach(self.timer, 0xFF04, 0xFF07)
+
+        # Serial dummy hardware
+        self.serial_data = gb_cpu.REG("SB", 8)
+        self.bus.attach(self.serial_data, 0xFF01, 0xFF01)
+        self.serial_control = gb_cpu.REG("SC", 8)
+        self.bus.attach(self.serial_control, 0xFF02, 0xFF02)
+
+        self.cpu = gb_cpu.CPU(self.bus)
+
+    def advance(self):
+        # TODO: double-check signed arithmetic everywhere. does C/H work
+        # as borrow flags when doing SUB/DEC/etc?
+        # TODO: implement the STOP instruction correctly
+
+        if not self.cpu._halted:
+            opcode = self.bus.read(self.cpu.PC.read())
+            op = self.cpu.decode(opcode)
+            cycles = op()
+        else:
+            # NOP if halted
+            cycles = 4
+
+        # TODO: not sure where/when/how often to do this, putting it here
+        # for now so we only have to call timer.advance() once:
+        # TODO: also, should this be an add or a direct assign?
+        cycles += self.cpu.service_interrupts()
+
+        # TODO: this seems to help the DMA calculation? uhhhh????
+        # cycles *= 4
+
+        T_op = self.cpu.T_cyc * cycles
+        # TODO: this is useful debug output:
+        # print T_op, cycles
+        self.timer.advance(T_op)
+
+        # TODO: decompose this and allow for configurable keybindings
+        keys = {}
+        key_bindings = {
+            pygame.K_LEFT: "left",
+            pygame.K_RIGHT: "right",
+            pygame.K_UP: "up",
+            pygame.K_DOWN: "down",
+            pygame.K_z: "a",
+            pygame.K_x: "b",
+            pygame.K_RETURN: "start",
+            pygame.K_TAB: "select",
+        }
+        for event in pygame.event.get(): 
+            if event.type == pygame.QUIT: 
+                self.cpu.op_stop()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_PAUSE:
+                    self.debug_trigger = True
+                elif event.key in key_bindings:
+                    keys[key_bindings[event.key]] = True
+            elif event.type == pygame.KEYUP:
+                if event.key in key_bindings:
+                    keys[key_bindings[event.key]] = False
+        if len(keys) > 0:
+            self.joypad.update(keys)
+
+        self.video_driver.advance(T_op)
+
+        # TODO: this DMA blockade seems to break tetris, investigate more
+        # closely what's going on
+        # seems like it's lasting a *little bit* too long
+        #
+        # TODO: make sure this DMA blockade covers MBCs once they're
+        # implemented
+        if self.video_driver.dma_active():
+            self.rom.bus_enabled = False
+            for ram_bank in self.ram:
+                ram_bank.bus_enabled = False
+        else:
+            self.rom.bus_enabled = True
+            for ram_bank in self.ram:
+                ram_bank.bus_enabled = True
+
+
 if __name__=="__main__":
     if len(sys.argv) < 2:
-        print "Usage: %s [-v] ROMFILE" % sys.argv[0]
+        print "Usage: %s [-v] [-d] [--paused] ROMFILE" % sys.argv[0]
         sys.exit(1)
 
-    if "-v" in sys.argv:
-        verbose = True
-    else:
-        verbose = False
+    # TODO: use argparser
+    debug = "-d" in sys.argv or "--debug" in sys.argv
+    verbose = "-v" in sys.argv
+    start_paused = "--paused" in sys.argv
 
     pygame.init()
     pygame.display.set_caption("pygb")
@@ -196,109 +325,42 @@ if __name__=="__main__":
 
     with open(sys.argv[1], "rb") as f:
         print "Building system"
-        sysbus = bus.BUS()
+        system = GAMEBOY()
+        if debug:
+            debugger = gb_debug.DEBUGGER(system, verbose=verbose)
+            if start_paused:
+                system.debug_trigger = True
 
-        rom = ROM(f)
-        sysbus.attach(rom, 0x0000, 0x3FFF)
-
-        ram = [RAM(4096), RAM(4096)]
-        sysbus.attach(ram[0], 0xC000, 0xCFFF)
-        sysbus.attach(ram[1], 0xD000, 0xDFFF)
-
-        hram = RAM(127)
-        sysbus.attach(hram, 0xFF80, 0xFFFE)
-
-        video_driver = video.VIDEO(sysbus)
-
-        joypad = JOYPAD()
-        sysbus.attach(joypad, 0xFF00, 0xFF00)
-
-        if_reg = cpu.REG("IF", 8)
-        sysbus.attach(if_reg, 0xFF0F, 0xFF0F)
-        
-        ie_reg = cpu.REG("IE", 8)
-        sysbus.attach(ie_reg, 0xFFFF, 0xFFFF)
-
-        timer = TIMER()
-        sysbus.attach(timer, 0xFF04, 0xFF07)
-
-        syscpu = cpu.CPU(sysbus)
-        
         print "Starting execution"
 
         n_instr = 0
         n_cyc = 0
         T_start = time.time()
-        while not syscpu._stopped:
+        running = True
+        while running:
             try:
-                # TODO: double-check signed arithmetic everywhere. does C/H work
-                # as borrow flags when doing SUB/DEC/etc?
-                # TODO: implement the STOP instruction correctly
-
-                if not syscpu._halted:
-                    opcode = sysbus.read(syscpu.PC.read())
-                    op = syscpu.decode(opcode)
-                    cycles = op()
+                system.advance()
+                running = not system.cpu._stopped
+                if debug:
+                    debugger.scan()
+            except gb_debug.DEBUGGER_TRIGGER:
+                if debug:
+                    debugger.start()
                 else:
-                    # NOP if halted
-                    cycles = 1
-
-                # TODO: not sure where/when/how often to do this, putting it here
-                # for now so we only have to call timer.advance() once:
-                cycles += syscpu.service_interrupts()
-
-                T_op = syscpu.T_cyc * cycles
-                timer.advance(T_op)
-
-                # TODO: decompose this and allow for configurable keybindings
-                keys = {}
-                key_bindings = {
-                    pygame.K_LEFT: "left",
-                    pygame.K_RIGHT: "right",
-                    pygame.K_UP: "up",
-                    pygame.K_DOWN: "down",
-                    pygame.K_z: "a",
-                    pygame.K_x: "b",
-                    pygame.K_RETURN: "start",
-                    pygame.K_TAB: "select",
-                }
-                for event in pygame.event.get(): 
-                    if event.type == pygame.QUIT: 
-                        syscpu.op_stop()
-                    elif event.type == pygame.KEYDOWN:
-                        if event.key in key_bindings:
-                            keys[key_bindings[event.key]] = True
-                    elif event.type == pygame.KEYUP:
-                        if event.key in key_bindings:
-                            keys[key_bindings[event.key]] = False
-                if len(keys) > 0:
-                    joypad.update(keys)
-
-                video_driver.advance(T_op)
-                # TODO: make sure this DMA blockade covers MBCs once they're
-                # implemented:
-                if video_driver.dma_active():
-                    rom.bus_enabled = False
-                    for ram_bank in ram:
-                        ram_bank.bus_enabled = False
+                    raise
+            except Exception as e:
+                traceback.print_exc()
+                if debug:
+                    debugger.start()
                 else:
-                    rom.bus_enabled = True
-                    for ram_bank in ram:
-                        ram_bank.bus_enabled = True
-
-                if verbose:
-                    # TODO: core dump is showing 'next pc' and 'current regs'
-                    print syscpu.core_dump()
                     print "------------"
-            except:
-                print "------------"
-                print "CORE DUMP"
-                print syscpu.core_dump()
-                print "------------"
-                raise
+                    print "CORE DUMP"
+                    print system.cpu.core_dump()
+                    print "------------"
+                running = False
 
             n_instr += 1
             n_cyc += 1
         T_end = time.time()
-        print "Executed %i instructions in %f seconds (%f simulated)" % (n_instr, T_end-T_start, n_cyc*syscpu.T_cyc)
+        print "Executed %i instructions in %f seconds (%f simulated)" % (n_instr, T_end-T_start, n_cyc*system.cpu.T_cyc)
 

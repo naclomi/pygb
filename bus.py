@@ -23,7 +23,11 @@ class BUS(object):
                     return device.bus_read(addr - device.bus_addr_lo)
                 else:
                     return 0xFF
-        raise Exception("Read from HiZ address 0x%04lX" % addr)
+
+        # TODO: don't allow this:
+        print "WARNING: Read from HiZ address 0x%04lX" % addr
+        return 0x00
+        # raise Exception("Read from HiZ address 0x%04lX" % addr)
 
     def write(self, addr, value, force=False):
         for device in self.devices:
@@ -31,7 +35,10 @@ class BUS(object):
                 if device.bus_enabled or force:
                     device.bus_write(addr - device.bus_addr_lo, value)
                 return
-        raise Exception("Write to HiZ address 0x%04lX" % addr)
+
+        # TODO: don't allow this:
+        print "WARNING: Write to HiZ address 0x%04lX" % addr
+        # raise Exception("Write to HiZ address 0x%04lX" % addr)
 
     def read_16(self, addr):
         return self.read(addr) | (self.read(addr+1) << 8)
@@ -47,6 +54,7 @@ class BUS_OBJECT(object):
         self.bus_addr_hi = None
         self.bus_enabled = True
         self.bus = None
+
 
     def bus_read(self, addr):
         raise Exception("Unimplemented method %s.bus_read" % str(type(self)))

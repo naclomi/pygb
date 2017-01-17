@@ -1,3 +1,4 @@
+import debug
 import operator
 import bus
 
@@ -7,8 +8,12 @@ class REG(bus.BUS_OBJECT):
         self.name = name
         self.size = size
         self.value = init
+        self.init = init
         self.mask = 2**size-1
         self.half_mask = 2**(size/2)-1
+
+    def reset(self):
+        self.value = self.init
 
     def read(self):
         return self.value
@@ -55,6 +60,10 @@ class FUSED_REG(object):
         self.reg_hi = reg_hi
         self.reg_lo = reg_lo
 
+    def reset(self):
+        self.reg_hi.reset()
+        self.reg_lo.reset()
+
     def read(self):
         return self.reg_hi.read() << self.reg_hi.size | self.reg_lo.read()
 
@@ -69,13 +78,19 @@ class FUSED_REG(object):
         self.reg_hi.write(value & self.reg_hi.mask, hi_mask)
 
     def incr(self, delta):
+        # TODO: is this is broken for negative deltas?
         lo_delta = delta & self.reg_lo.mask
         carry, _ = self.reg_lo.incr(lo_delta)
         
         hi_delta = (delta >> self.reg_lo.size)
         if carry:
-            hi_delta += 1 if delta > 0 else -1
+            hi_delta += 1
         carry, half_carry = self.reg_hi.incr(hi_delta)
+
+        if delta < 0:
+            # If this was a decr operation, change the carries into borrows
+            carry = not carry
+            half_carry = not half_carry
 
         return (carry, half_carry)
 
@@ -87,6 +102,10 @@ class IMMEDIATE_REG(object):
         self.cpu = cpu
         self.name = "IMMEDIATE_%d" % size
         self.size = size
+
+    def reset(self):
+        # TODO: better exception class for this:
+        raise Exception("Cannot write to immediate argument")
 
     def read(self):
         if self.size == 8:
@@ -118,7 +137,7 @@ class CPU(object):
         self.bus = bus
 
         self.f = 4.194304e6
-        self.T_cyc = 1 / self.f
+        self.T_cyc = 1 / self.f # 2.384185791015625e-07
 
         # TODO: fill in initial values for everything (see The PDF pg18)
         self._IME = True
@@ -186,6 +205,19 @@ class CPU(object):
             lambda dst, from_memory: self.op_shift(dst, from_memory, False, False), # SRL
         ]
 
+        self.reset()
+
+    def reset(self):
+        self.A.write(0x01)
+        self.F.write(0xB0)
+        self.B.write(0x00)
+        self.C.write(0x13)
+        self.D.write(0x00)
+        self.E.write(0xD8)
+        self.H.write(0x01)
+        self.L.write(0x4D)
+        self.SP.write(0xFFFE)
+
     def op_nop(self):
         self.PC.incr(1)
         return 4
@@ -219,7 +251,6 @@ class CPU(object):
         # TODO: combine this with op_mem_store_indirect - the only real
         # difference is the PC incr at the end
         addr = dst.read()
-        print hex(addr), hex(addr_offset), hex(addr+addr_offset)
         addr += addr_offset
         addr &= 0xFFFF
         self.bus.write(addr, src.read())
@@ -237,12 +268,20 @@ class CPU(object):
         return 12
 
     def op_mem_load(self, dst, addr_offset=0):
-        addr = self.bus.read_16(self.PC.read()+1)
-        addr += addr_offset
+        # TODO: two separate ops use this function, and one uses 8 bit immediate
+        # data while the other uses 16. find a nicer way to figure out which
+        # to use, rather than testing addr_offset
+        if addr_offset == 0:
+            addr = self.bus.read_16(self.PC.read()+1)
+            imm_bytes = 2
+        else:
+            addr = self.bus.read(self.PC.read()+1)
+            addr += addr_offset
+            imm_bytes = 1
         addr &= 0xFFFF
         dst.write(self.bus.read(addr))
-        self.PC.incr(3)
-        return 12 if src is not self.A else 16
+        self.PC.incr(1+imm_bytes)
+        return 12 if dst is not self.A else 16
 
     def op_mem_pop(self, dst):
         dst.write(self.bus.read_16(self.SP.read()))
@@ -286,7 +325,7 @@ class CPU(object):
         if (r8 & 0x80) != 0:
             r8 |= 0xFF00
         self.HL.write(r8)
-        self.op_add_16(self.HL, self.sp)
+        self.op_add_16(self.HL, self.SP)
         # We want to increment by 2, but op_add_16 above already incremented
         # the PC by 1
         self.PC.incr(1)
@@ -335,7 +374,7 @@ class CPU(object):
         if from_memory:
             val = self.bus.read(val)
 
-        carry = (SELF.FLAG.read() & self.FLAG_C) != 0
+        carry = (self.FLAG.read() & self.FLAG_C) != 0
         val = carry << 8 | val
 
         rot_bit_idx = 8 if include_carry else 7
@@ -432,15 +471,15 @@ class CPU(object):
         return 16 if from_memory else 8
 
     def op_bit_modify(self, idx, dst, reset, from_memory):
-        if from_memory:            
+        if not from_memory:            
             dst.write(0x00 if reset else 0xFF, 1 << idx)
         else:
-            val = self.bus.read(dst.read())
+            val = self.bus.read(self.HL.read())
             if reset:
                 val &= ~(1 << idx)
             else:
                 val |= 1 << idx
-            self.bus.write(dst.read(), val)
+            self.bus.write(self.HL.read(), val)
 
         self.PC.incr(2)
         return 16 if from_memory else 8
@@ -522,6 +561,11 @@ class CPU(object):
 
     def op_ret(self, conditional_idx, enable_interrupts):
         if conditional_idx is None or self.cc[conditional_idx]():
+            if conditional_idx is None:
+                print "PC", hex(self.PC.read())
+                print "SP", hex(self.SP.read())
+                print "(SP)", hex(self.bus.read_16(self.SP.read()))
+                print "(SP)", hex(self.bus.read(self.SP.read())), hex(self.bus.read(self.SP.read()+1))
             if enable_interrupts:
                 self._IME = True
             self.PC.write(self.bus.read_16(self.SP.read()))
@@ -529,6 +573,11 @@ class CPU(object):
             # TODO: color matrix says unconditional ret is 16, pdf says 8
             # which is it???
             # nb: same deal with RETI
+            if conditional_idx is None: 
+                print hex(self.PC.read())
+                # import time
+                # time.sleep(2)
+                raise debug.DEBUGGER_TRIGGER()
             return 16 if conditional_idx is None else 20
         else:
             self.PC.incr(1)
@@ -822,6 +871,8 @@ class CPU(object):
         out.append("PC 0x%04X" % self.PC.read())
         out.append("op 0x%02X" % self.bus.read(self.PC.read()))
         out.append("imm 0x%04X" % self.bus.read_16(self.PC.read()+1))
+        out.append("SP 0x%04X" % self.SP.read())
+
         for reg in self.r + [self.FLAG]:
             if not reg:
                 continue

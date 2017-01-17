@@ -1,5 +1,6 @@
 import bus
 import pygame
+import util
 
 # TODO: For HBLANK, maybe speculatively draw the whole screen right after
 # vblank and then just leave the backend idle while the video mode cycles,
@@ -21,7 +22,8 @@ class VIDEO(object):
         self.T_mode0_edge = self.T_mode2 + self.T_mode3 + self.T_mode0
         self.T_scanline = self.T_mode0_edge
 
-        self.T_dma = 160e-6
+        # TODO: this *should* be 160, why doesn't that work??
+        self.T_dma = 140e-6
 
         self.bus = bus
         self.scale = scale
@@ -50,10 +52,12 @@ class VIDEO(object):
         self.vram_oam = VIDEO_OAM()
         bus.attach(self.vram_oam, 0xFE00, 0xFE9F)
 
-        self.bg_tiles = [None] * 192
-        self.oam_tiles = [None] * 40
+        self.bg_tiles = [None] * self.vram_tile.N_tiles
+        self.oam_tiles = [None] * len(self.vram_oam.sprites)
         self.update_bg_tiles()
         self.update_oam()
+
+        self.frame = 0
 
         self.display_clock = 0.0
         self.dma_clock = 0.0
@@ -237,20 +241,26 @@ class VIDEO(object):
 
         # TODO: implement scanline redraw, reset-on-display-disable
 
+        # Handle OAM DMA
         if self.dma_active():
+            print "dma clock", util.time_str(self.dma_clock)
             self.dma_clock -= delta
             if self.dma_clock <= 0:
                 self.dma_clock = 0
                 self.vregs.dma_base = None
         else:
             if self.vregs.dma_base is not None:
-                self.dma_clock = self.T_dma
+                print "dma clock", util.time_str(self.dma_clock)
+                self.dma_clock = self.T_dma - delta
                 self.vram_oam.dma(self.vregs.dma_base)
 
+        # Wrap display clock if we've refreshed the screen
         if self.display_clock >= self.T_refresh:
                 self.draw()
+                self.frame += 1
                 self.display_clock -= self.T_refresh
 
+        # Emulate display state machine
         if self.display_clock >= self.T_scanline * 144:
             # V-Blank
             if self.vregs.mode != 1:
@@ -369,6 +379,35 @@ class VIDEO_REGS(bus.BUS_OBJECT):
         self.wx = 0
         self.wy = 0
 
+        self.reset()
+
+    def reset(self):
+        self.display_enable = 1
+        self.window_map = 0
+        self.window_enable = 0
+        self.map_data = 1
+        self.bg_map = 0
+        self.sprite_size = 0
+        self.sprite_enable = 0
+        self.bg_enable = 1
+
+        self.scx = 0
+        self.scy = 0
+
+        self.lyc = 0
+
+        self.bgp = [0, 3, 3, 3]
+        self.bgp_changed = True
+
+        self.obp0 = [3, 3, 3, 3]
+        self.obp0_changed = True
+
+        self.obp1 = [3, 3, 3, 3]
+        self.obp1_changed = True
+
+        self.wx = 0
+        self.wy = 0
+
     def bus_read(self, addr):
         if addr == 0: # FF40 - LCDC
             val = 0
@@ -458,36 +497,38 @@ class VIDEO_REGS(bus.BUS_OBJECT):
 class VIDEO_TILE_RAM(bus.BUS_OBJECT):
     def __init__(self):
         super(VIDEO_TILE_RAM, self).__init__()
-        self.tiles = [[0]*(8*8)]*192
-        self.tiles_changed = [True]*192
+        
+        self.N_tiles = 384
+        self.tiles = [[0]*(8*8)]*self.N_tiles
+        self.tiles_changed = [True]*self.N_tiles
 
-        self.tiles[0] = [
-            0,0,0,0,0,0,0,0,
-            0,2,0,0,0,0,3,0,
-            0,0,0,0,0,0,0,0,
-            0,0,0,0,0,0,0,0,
-            0,0,0,0,0,0,0,0,
-            0,0,0,0,0,0,0,0,
-            0,1,0,0,0,0,0,0,
-            0,0,0,0,0,0,0,0,
-        ]
 
-        self.tiles[1] = [
-            0,0,1,1,1,0,0,0,
-            0,1,1,1,1,1,0,0,
-            1,1,2,1,2,1,1,0,
-            1,3,1,1,1,3,1,0,
-            1,3,1,3,1,3,1,0,
-            0,1,3,1,3,1,0,0,
-            0,0,1,1,1,0,0,0,
-            0,0,0,0,0,0,0,0,
-        ]
-
+        # TODO: delete these some day:
+        # self.tiles[0] = [
+        #     0,0,0,0,0,0,0,0,
+        #     0,2,0,0,0,0,3,0,
+        #     0,0,0,0,0,0,0,0,
+        #     0,0,0,0,0,0,0,0,
+        #     0,0,0,0,0,0,0,0,
+        #     0,0,0,0,0,0,0,0,
+        #     0,1,0,0,0,0,0,0,
+        #     0,0,0,0,0,0,0,0,
+        # ]
+        # self.tiles[1] = [
+        #     0,0,1,1,1,0,0,0,
+        #     0,1,1,1,1,1,0,0,
+        #     1,1,2,1,2,1,1,0,
+        #     1,3,1,1,1,3,1,0,
+        #     1,3,1,3,1,3,1,0,
+        #     0,1,3,1,3,1,0,0,
+        #     0,0,1,1,1,0,0,0,
+        #     0,0,0,0,0,0,0,0,
+        # ]
 
     def bus_read(self, addr):
         value = 0
-        tile_idx = addr/16
-        pix_base = ((addr - tile_idx) / 2) * 8
+        tile_idx = addr / 16
+        pix_base = ((addr % 16) / 2) * 8
         tile = self.tiles[tile_idx]
         pix_bit = addr % 2
         for pix_idx in xrange(pix_base, pix_base+8):
@@ -501,8 +542,8 @@ class VIDEO_TILE_RAM(bus.BUS_OBJECT):
         return value
 
     def bus_write(self, addr, value):
-        tile_idx = addr/16
-        pix_base = ((addr - tile_idx) / 2) * 8
+        tile_idx = addr / 16
+        pix_base = ((addr % 16) / 2) * 8
         tile = self.tiles[tile_idx]
         pix_bit = addr % 2
         if pix_bit:
@@ -576,10 +617,10 @@ class SPRITE(object):
         elif addr == 2:
             self.tile_idx = value & 0xFF
         elif addr == 3:
-            self.palette = (val >> 4) & 0x01
-            self.h_flip = (val >> 5) & 0x01
-            self.v_flip = (val >> 6) & 0x01
-            self.priority = (val >> 7) & 0x01
+            self.palette = (value >> 4) & 0x01
+            self.h_flip = (value >> 5) & 0x01
+            self.v_flip = (value >> 6) & 0x01
+            self.priority = (value >> 7) & 0x01
         else: 
             raise Exception("sprite doesn't know WHAT the fuck to do")
 
@@ -589,26 +630,26 @@ class VIDEO_OAM(bus.BUS_OBJECT):
         super(VIDEO_OAM, self).__init__()
         self.sprites = [SPRITE(x) for x in range(40)]
 
-        self.sprites[3].x = 40
-        self.sprites[3].y = 40
-        self.sprites[3].tile_idx = 1
-        self.sprites[3].v_flip = 1
-        self.sprites[3].priority = 1
-        
-        self.sprites[4].x = 50
-        self.sprites[4].y = 40
-        self.sprites[4].tile_idx = 1
-        self.sprites[4].v_flip = 1
-        self.sprites[4].palette = 1
-        self.sprites[4].priority = 0
+        # TODO: delete these some day:
+        # self.sprites[3].x = 40
+        # self.sprites[3].y = 40
+        # self.sprites[3].tile_idx = 1
+        # self.sprites[3].v_flip = 1
+        # self.sprites[3].priority = 1        
+        # self.sprites[4].x = 50
+        # self.sprites[4].y = 40
+        # self.sprites[4].tile_idx = 1
+        # self.sprites[4].v_flip = 1
+        # self.sprites[4].palette = 1
+        # self.sprites[4].priority = 0
 
     def dma(self, dma_base):
         ptr = dma_base
         for sprite in self.sprites:
-            self.sprites.write(0, self.bus.read(ptr), force=True)
-            self.sprites.write(1, self.bus.read(ptr+1), force=True)
-            self.sprites.write(2, self.bus.read(ptr+2), force=True)
-            self.sprites.write(3, self.bus.read(ptr+3), force=True)
+            sprite.write(0, self.bus.read(ptr, force=True))
+            sprite.write(1, self.bus.read(ptr+1, force=True))
+            sprite.write(2, self.bus.read(ptr+2, force=True))
+            sprite.write(3, self.bus.read(ptr+3, force=True))
             ptr += 4
 
     def bus_read(self, addr):
