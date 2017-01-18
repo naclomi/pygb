@@ -9,42 +9,13 @@ import traceback
 
 # For the system
 import debug as gb_debug
+import memory as gb_memory
 import video as gb_video
 import sound as gb_sound
 import bus as gb_bus
 import cpu as gb_cpu
 
-class ROM(gb_bus.BUS_OBJECT):
-    def __init__(self, rom_bin):
-        super(ROM, self).__init__()
-        self.rom_bytes = []
-        if type(rom_bin) is file:
-            rom_bin.seek(0x00)
-            try:
-                while True:
-                    self.rom_bytes.append(ord(rom_bin.read(1)))
-            except:
-                pass
-
-    def bus_write(self, addr, value):
-        # TODO: this function shouldn't exist - handle in an MBC class
-        print "WARNING: Write to ROM address 0x%04lx" % (addr+self.bus_addr_lo)
-
-    def bus_read(self, addr):
-        return self.rom_bytes[addr]
-
-
-class RAM(gb_bus.BUS_OBJECT):
-    def __init__(self, size=2**16):
-        super(RAM, self).__init__()
-        self.ram_bytes = [0x00]*size
-
-    def bus_read(self, addr):
-        return self.ram_bytes[addr]
-
-    def bus_write(self, addr, value):
-        self.ram_bytes[addr] = value
-
+# TODO: move TIMER to sound, JOYPAD to uh, somewhere else...
 
 class TIMER(gb_bus.BUS_OBJECT):
     def __init__(self):
@@ -199,21 +170,18 @@ class JOYPAD(gb_bus.BUS_OBJECT):
 
 
 class GAMEBOY(object):
-    def __init__(self):
+    def __init__(self, rom_bin):
         self.debug_trigger = False
 
         self.bus = gb_bus.BUS()
 
-        self.rom = ROM(f)
-        # TODO: implement banks instead of fixing bank 2:
-        # self.bus.attach(self.rom, 0x0000, 0x3FFF)
-        self.bus.attach(self.rom, 0x0000, 0x7FFF)
+        self.cart = gb_memory.CARTRIDGE(self.bus, rom_bin)
 
-        self.ram = [RAM(4096), RAM(4096)]
+        self.ram = [gb_memory.RAM(4096), gb_memory.RAM(4096)]
         self.bus.attach(self.ram[0], 0xC000, 0xCFFF)
         self.bus.attach(self.ram[1], 0xD000, 0xDFFF)
 
-        self.hram = RAM(127)
+        self.hram = gb_memory.RAM(127)
         self.bus.attach(self.hram, 0xFF80, 0xFFFE)
 
         self.video_driver = gb_video.VIDEO(self.bus)
@@ -300,11 +268,11 @@ class GAMEBOY(object):
         # TODO: make sure this DMA blockade covers MBCs once they're
         # implemented
         if self.video_driver.dma_active():
-            self.rom.bus_enabled = False
+            self.cart.allow_bus_access(False)
             for ram_bank in self.ram:
                 ram_bank.bus_enabled = False
         else:
-            self.rom.bus_enabled = True
+            self.cart.allow_bus_access(True)
             for ram_bank in self.ram:
                 ram_bank.bus_enabled = True
 
@@ -325,7 +293,7 @@ if __name__=="__main__":
 
     with open(sys.argv[1], "rb") as f:
         print "Building system"
-        system = GAMEBOY()
+        system = GAMEBOY(f)
         if debug:
             debugger = gb_debug.DEBUGGER(system, verbose=verbose)
             if start_paused:
@@ -343,12 +311,13 @@ if __name__=="__main__":
                 running = not system.cpu._stopped
                 if debug:
                     debugger.scan()
-            except gb_debug.DEBUGGER_TRIGGER:
+            except gb_debug.DEBUGGER_TRIGGER as e:
                 if debug:
+                    traceback.print_exc()
                     debugger.start()
                 else:
                     raise
-            except Exception as e:
+            except Exception:
                 traceback.print_exc()
                 if debug:
                     debugger.start()

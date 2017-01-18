@@ -575,9 +575,7 @@ class CPU(object):
             # nb: same deal with RETI
             if conditional_idx is None: 
                 print hex(self.PC.read())
-                # import time
-                # time.sleep(2)
-                raise debug.DEBUGGER_TRIGGER()
+                # raise debug.DEBUGGER_TRIGGER("CPU RET PAUSE")
             return 16 if conditional_idx is None else 20
         else:
             self.PC.incr(1)
