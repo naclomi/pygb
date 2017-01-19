@@ -8,3 +8,4 @@ def time_str(time):
         return "%.1fus" % (time/1e-6)
     else:
         return "%.1fns" % (time/1e-9)
+

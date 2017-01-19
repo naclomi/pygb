@@ -264,6 +264,7 @@ class CARTRIDGE(object):
         self.mbc = self.mbc_type(self.rom, self.ram)
         # TODO: move the accessory flags (timer, rumble, accel) into mbc
         # implementations somehow
+        # TODO: implement battery saves :) !!
 
         self.rom_0 = MEM_SEGMENT(0, self.mbc)
         self.bus.attach(self.rom_0, 0x0000, 0x3FFF)

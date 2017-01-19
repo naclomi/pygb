@@ -128,7 +128,9 @@ class VIDEO(object):
                 self.window.fill(self.colors[self.vregs.bgp[0]])
 
             scx = self.vregs.scx
-            scy = self.vregs.scy
+            # TODO: temporarily disable scy for blargg's tests
+            scy = 0
+            #scy = self.vregs.scy
             wx = self.vregs.wx
             wy = self.vregs.wy
             data_select = self.vregs.map_data
@@ -168,7 +170,7 @@ class VIDEO(object):
                             tile_idx = tile_map[map_idx]
                         else:
                             # TODO: test this:
-                            tile_idx = 128 + ((tile_map[map_idx] + 128) & 0xFF)
+                            tile_idx = 0x80 + tile_map[map_idx]
                         bitmap = self.bg_tiles[tile_idx]
                         self.window.blit(bitmap, (
                             (x*8+scx%8)*self.scale, 
@@ -208,7 +210,7 @@ class VIDEO(object):
                             tile_idx = tile_map[map_idx]
                         else:
                             # TODO: test this:
-                            tile_idx = 128 + ((tile_map[map_idx] + 128) & 0xFF)
+                            tile_idx = 0x80 + tile_map[map_idx]
                         bitmap = self.bg_tiles[tile_idx]
                         self.window.blit(bitmap, (
                             (x*8+wx-7)*self.scale, 
@@ -229,8 +231,8 @@ class VIDEO(object):
                         (sprite.y - 16) * self.scale
                     ))
 
-        for tile_idx in range(len(self.vram_tile.tiles_changed)):
-            self.vram_tile.tiles_changed[tile_idx] = False
+            for tile_idx in range(len(self.vram_tile.tiles_changed)):
+                self.vram_tile.tiles_changed[tile_idx] = False
 
         pygame.display.flip()
 
@@ -239,7 +241,7 @@ class VIDEO(object):
 
         scan_clock = self.display_clock % self.T_scanline
 
-        # TODO: implement scanline redraw, reset-on-display-disable
+        # TODO: implement scanline redraw
 
         # Handle OAM DMA
         if self.dma_active():
@@ -254,85 +256,106 @@ class VIDEO(object):
                 self.dma_clock = self.T_dma - delta
                 self.vram_oam.dma(self.vregs.dma_base)
 
-        # Wrap display clock if we've refreshed the screen
-        if self.display_clock >= self.T_refresh:
-                self.draw()
-                self.frame += 1
-                self.display_clock -= self.T_refresh
+        if self.vregs.display_enable:
+            # Wrap display clock if we've refreshed the screen
+            if self.display_clock >= self.T_refresh:
+                    self.draw()
+                    self.frame += 1
+                    self.display_clock -= self.T_refresh
 
-        # Emulate display state machine
-        if self.display_clock >= self.T_scanline * 144:
-            # V-Blank
-            if self.vregs.mode != 1:
-                self.vregs.mode = 1
+            # Emulate display state machine
+            if self.display_clock >= self.T_scanline * 144:
+                # V-Blank
+                if self.vregs.mode != 1:
+                    self.vregs.mode = 1
 
-                self.vram_oam.bus_enabled = True
-                self.vram_tile.bus_enabled = True
-                self.vram_map_0.bus_enabled = True
-                self.vram_map_1.bus_enabled = True
+                    self.vram_oam.bus_enabled = True
+                    self.vram_tile.bus_enabled = True
+                    self.vram_map_0.bus_enabled = True
+                    self.vram_map_1.bus_enabled = True
 
-                if self.vregs.v_blank_int:
-                    # Trigger an interrupt
-                    # TODO: pull these magic numbers out somewhere
-                    IF_state = self.bus.read(0xFF0F)
-                    IF_state |= 0x1
-                    self.bus.write(0xFF0F, IF_state)
-        elif scan_clock <= self.T_mode2_edge:
-            # OAM
-            if self.vregs.mode != 2:
-                self.vregs.mode = 2
+                    if self.vregs.v_blank_int:
+                        # Trigger an interrupt
+                        # TODO: pull these magic numbers out somewhere
+                        IF_state = self.bus.read(0xFF0F)
+                        IF_state |= 0x1
+                        self.bus.write(0xFF0F, IF_state)
+            elif scan_clock <= self.T_mode2_edge:
+                # OAM
+                if self.vregs.mode != 2:
+                    self.vregs.mode = 2
 
-                self.vram_oam.bus_enabled = False
-                self.vram_tile.bus_enabled = True
-                self.vram_map_0.bus_enabled = True
-                self.vram_map_1.bus_enabled = True
+                    self.vram_oam.bus_enabled = False
+                    self.vram_tile.bus_enabled = True
+                    self.vram_map_0.bus_enabled = True
+                    self.vram_map_1.bus_enabled = True
 
-                if self.vregs.oam_int:
+                    if self.vregs.oam_int:
+                        # Trigger an interrupt
+                        # TODO: pull these magic numbers out somewhere
+                        IF_state = self.bus.read(0xFF0F)
+                        IF_state |= 0x2
+                        self.bus.write(0xFF0F, IF_state)
+            elif scan_clock <= self.T_mode3_edge:
+                # OAM+VRAM
+                if self.vregs.mode != 3:
+                    self.vregs.mode = 3
+
+                    self.vram_oam.bus_enabled = False
+                    self.vram_tile.bus_enabled = False
+                    self.vram_map_0.bus_enabled = False
+                    self.vram_map_1.bus_enabled = False
+            elif scan_clock <= self.T_mode0_edge:
+                # H-Blank
+                if self.vregs.mode != 0:
+                    self.vregs.mode = 0
+
+                    self.vram_oam.bus_enabled = True
+                    self.vram_tile.bus_enabled = True
+                    self.vram_map_0.bus_enabled = True
+                    self.vram_map_1.bus_enabled = True
+
+                    if self.vregs.h_blank_int:
+                        # Trigger an interrupt
+                        # TODO: pull these magic numbers out somewhere
+                        IF_state = self.bus.read(0xFF0F)
+                        IF_state |= 0x2
+                        self.bus.write(0xFF0F, IF_state)
+
+            # Update LY and check if we should trigger the coincidence interrupt
+            cur_ly = int(self.display_clock / self.T_scanline)
+            if self.vregs.ly != cur_ly:
+                self.vregs.ly = cur_ly
+            coincidence = self.vregs.ly == self.vregs.lyc
+            if coincidence != self.vregs.coincidence_flag:
+                self.vregs.coincidence_flag = coincidence
+                if coincidence and self.vregs.coincidence_int:
                     # Trigger an interrupt
                     # TODO: pull these magic numbers out somewhere
                     IF_state = self.bus.read(0xFF0F)
                     IF_state |= 0x2
                     self.bus.write(0xFF0F, IF_state)
-        elif scan_clock <= self.T_mode3_edge:
-            # OAM+VRAM
-            if self.vregs.mode != 3:
-                self.vregs.mode = 3
+        else:
+            # Reset state machine
+            self.display_clock = 0
+            
+            # Reset STAT
+            self.vregs.mode = 0
+            self.vregs.coincidence_flag = 0
+            self.vregs.h_blank_int = 0
+            self.vregs.v_blank_int = 0
+            self.vregs.oam_int = 0
+            self.vregs.coincidence_int = 0
+            self.vregs.ly = 0
 
-                self.vram_oam.bus_enabled = False
-                self.vram_tile.bus_enabled = False
-                self.vram_map_0.bus_enabled = False
-                self.vram_map_1.bus_enabled = False
-        elif scan_clock <= self.T_mode0_edge:
-            # H-Blank
-            if self.vregs.mode != 0:
-                self.vregs.mode = 0
+            # Force RAM ports open
+            self.vram_oam.bus_enabled = True
+            self.vram_tile.bus_enabled = True
+            self.vram_map_0.bus_enabled = True
+            self.vram_map_1.bus_enabled = True
 
-                self.vram_oam.bus_enabled = True
-                self.vram_tile.bus_enabled = True
-                self.vram_map_0.bus_enabled = True
-                self.vram_map_1.bus_enabled = True
-
-                if self.vregs.h_blank_int:
-                    # Trigger an interrupt
-                    # TODO: pull these magic numbers out somewhere
-                    IF_state = self.bus.read(0xFF0F)
-                    IF_state |= 0x2
-                    self.bus.write(0xFF0F, IF_state)
-
-        # Update LY and check if we should trigger the coincidence interrupt
-        cur_ly = int(self.display_clock / self.T_scanline)
-        if self.vregs.ly != cur_ly:
-            self.vregs.ly = cur_ly
-        coincidence = self.vregs.ly == self.vregs.lyc
-        if coincidence != self.vregs.coincidence_flag:
-            self.vregs.coincidence_flag = coincidence
-            if coincidence and self.vregs.coincidence_int:
-                # Trigger an interrupt
-                # TODO: pull these magic numbers out somewhere
-                IF_state = self.bus.read(0xFF0F)
-                IF_state |= 0x2
-                self.bus.write(0xFF0F, IF_state)
-
+            # Clear screen
+            self.draw()
 
 class VIDEO_REGS(bus.BUS_OBJECT):
     def __init__(self):
@@ -499,9 +522,8 @@ class VIDEO_TILE_RAM(bus.BUS_OBJECT):
         super(VIDEO_TILE_RAM, self).__init__()
         
         self.N_tiles = 384
-        self.tiles = [[0]*(8*8)]*self.N_tiles
+        self.tiles = [[0]*(8*8) for _ in range(self.N_tiles)]
         self.tiles_changed = [True]*self.N_tiles
-
 
         # TODO: delete these some day:
         # self.tiles[0] = [
@@ -524,6 +546,11 @@ class VIDEO_TILE_RAM(bus.BUS_OBJECT):
         #     0,0,1,1,1,0,0,0,
         #     0,0,0,0,0,0,0,0,
         # ]
+
+    def ascii_art(self, tile_idx):
+        tile = self.tiles[tile_idx]
+        for x in range(8):
+            print "".join(map(str, tile[x*8:(x+1)*8]))
 
     def bus_read(self, addr):
         value = 0
@@ -550,9 +577,9 @@ class VIDEO_TILE_RAM(bus.BUS_OBJECT):
             value = value << 1
         for pix_idx in xrange(pix_base, pix_base+8):
             if pix_bit:
-                tile[pix_idx] = (tile[pix_idx] & 0x2) | (value & 0x2)
+                tile[pix_idx] = (tile[pix_idx] & 0x1) | (value & 0x2)
             else:
-                tile[pix_idx] = (tile[pix_idx] & 0x1) | (value & 0x1)
+                tile[pix_idx] = (tile[pix_idx] & 0x2) | (value & 0x1)
             value = value >> 1
 
         self.tiles_changed[tile_idx] = True
