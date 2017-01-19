@@ -160,7 +160,8 @@ class CPU(object):
         self.IMMEDIATE_8 = IMMEDIATE_REG(self, 8)
         self.IMMEDIATE_16 = IMMEDIATE_REG(self, 16)
 
-        self.FLAG = REG("FLAG")
+        self.F.mask = 0xF0
+        self.FLAG = self.F
         self.FLAG_Z = 0b10000000
         self.FLAG_N = 0b01000000
         self.FLAG_H = 0b00100000
@@ -488,10 +489,10 @@ class CPU(object):
         carry = False
 
         if (self.FLAG.read() & self.FLAG_H) != 0 or (self.A.read() & 0x0F) > 0x09:
-            carry, _ = self.A.inc(0x06)
+            carry, _ = self.A.incr(0x06)
 
         if (self.FLAG.read() & self.FLAG_C) != 0 or (self.A.read() & 0xF0) > 0x90:
-            new_carry, _ = self.A.inc(0x60)
+            new_carry, _ = self.A.incr(0x60)
             carry |= new_carry
 
         self.FLAG.write(0x00, self.FLAG_H)
