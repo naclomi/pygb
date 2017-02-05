@@ -33,24 +33,24 @@ class REG(bus.BUS_OBJECT):
         return self.write(value)
 
     def incr(self, delta):
-        carry = False
-        half_carry = False
+        decr = delta < 0
+
+        if decr:
+            carry = -delta > self.value
+            half_carry = ((-delta) & self.half_mask) > (self.value & self.half_mask)
+
+        delta &= self.mask
+
+        full = self.value + delta
+        half = (self.value & self.half_mask) + (delta & self.half_mask)
         
-        half_sum = (self.value & self.half_mask) + (delta & self.half_mask)
-        if (half_sum & ~self.half_mask) != 0:
-            half_carry = True
+        self.value = full & self.mask
 
-        self.value += delta
-        if (self.value & ~self.mask) != 0:
-            carry = True
-        self.value &= self.mask
-
-        if delta < 0:
-            # If this was a decr operation, change the carries into borrows
-            carry = not carry
-            half_carry = not half_carry
-
+        if not decr:
+            carry = full > self.mask
+            half_carry = half > self.half_mask
         return (carry, half_carry)
+
 
 class FUSED_REG(object):
     def __init__(self, reg_hi, reg_lo):
@@ -78,20 +78,26 @@ class FUSED_REG(object):
         self.reg_hi.write(value & self.reg_hi.mask, hi_mask)
 
     def incr(self, delta):
-        # TODO: is this is broken for negative deltas?
-        lo_delta = delta & self.reg_lo.mask
-        carry, _ = self.reg_lo.incr(lo_delta)
+        decr = delta < 0
+        value = self.read()
+        # TODO: don't hardcode these:
+        mask = 0xFFFF
+        half_mask = 0x0FFF
+
+        if decr:
+            carry = -delta > value
+            half_carry = ((-delta) & half_mask) > (value & half_mask)
+
+        delta &= mask
+
+        full = value + delta
+        half = (value & half_mask) + (delta & half_mask)
         
-        hi_delta = (delta >> self.reg_lo.size)
-        if carry:
-            hi_delta += 1
-        carry, half_carry = self.reg_hi.incr(hi_delta)
+        self.write(full & mask)
 
-        if delta < 0:
-            # If this was a decr operation, change the carries into borrows
-            carry = not carry
-            half_carry = not half_carry
-
+        if not decr:
+            carry = full > mask
+            half_carry = half > half_mask
         return (carry, half_carry)
 
 
@@ -196,10 +202,10 @@ class CPU(object):
         ]
         self.rot = [
             # TODO: Double check for any differences between CB RLC A and RLC A
-            lambda dst, from_memory: self.op_rot(dst, from_memory, True, True, True), # RLC
-            lambda dst, from_memory: self.op_rot(dst, from_memory, False, True, True), # RRC
-            lambda dst, from_memory: self.op_rot(dst, from_memory, True, False, True), # RL
-            lambda dst, from_memory: self.op_rot(dst, from_memory, False, False, True), # RR
+            lambda dst, from_memory: self.op_rot(dst, from_memory, True, False, True), # RLC
+            lambda dst, from_memory: self.op_rot(dst, from_memory, False, False, True), # RRC
+            lambda dst, from_memory: self.op_rot(dst, from_memory, True, True, True), # RL
+            lambda dst, from_memory: self.op_rot(dst, from_memory, False, True, True), # RR
             lambda dst, from_memory: self.op_shift(dst, from_memory, True, True), # SLA
             lambda dst, from_memory: self.op_shift(dst, from_memory, False, True), # SRA
             self.op_swap,
@@ -259,7 +265,7 @@ class CPU(object):
         return 12 if src is not self.A else 16
 
     def op_mem_store_sp(self):
-        self.bus.write_16(self.bus.read_16(self.PC.read()), self.SP.read())
+        self.bus.write_16(self.bus.read_16(self.PC.read()+1), self.SP.read())
         self.PC.incr(3)
         return 20
 
@@ -288,9 +294,6 @@ class CPU(object):
         dst.write(self.bus.read_16(self.SP.read()))
         self.SP.incr(2)
         self.PC.incr(1)
-        # TODO: the colorful gb opcode matrix indicates that POP AF affects all
-        # flags Z N H C while none of the others do. This seems like its a typo,
-        # but double-check
         return 12
 
     def op_mem_push(self, src):
@@ -333,6 +336,11 @@ class CPU(object):
         return 12
 
     def op_add_sp(self):
+        # TODO: according to alex, 0xe8 and 0xf8:
+        # the values of the carry and halfcarry are
+        # computed on the low 8bits. but there are "gotchas" (see
+        # https://github.com/simias/gb-rs)
+
         # TODO: figure out if this is the right way to sign extend, and where to
         # do it:
         r8 = self.bus.read(self.PC.read()+1)
@@ -387,16 +395,17 @@ class CPU(object):
             rot_bit = (val & 0x01) != 0
             val = val >> 1
             val |= rot_bit << rot_bit_idx
+
+        self.FLAG.write(0xFF if (val & (1 << rot_bit_idx)) != 0 else 0x00, self.FLAG_C)
+        self.FLAG.write(0x00, self.FLAG_H)
+        self.FLAG.write(0x00, self.FLAG_N)
+
         val = val & 0xFF
 
         if from_memory:
             self.bus.write(dst.read(), val)
         else:
             dst.write(val)
-
-        self.FLAG.write(0xFF if (val & (1 << rot_bit_idx)) != 0 else 0x00, self.FLAG_C)
-        self.FLAG.write(0x00, self.FLAG_H)
-        self.FLAG.write(0x00, self.FLAG_N)
 
         # TODO: double-check this FLAG_Z behavior, CB instructions actually
         # set Z appropriately while the color matrix says non-CB RLA/RLCA
@@ -486,20 +495,44 @@ class CPU(object):
         return 16 if from_memory else 8
 
     def op_daa(self):
-        carry = False
+        # TODO: compare the commented out implementation with the in-use one,
+        # which is more or less copied from http://forums.nesdev.com/viewtopic.php?t=9088
+        # See if they end up producing the same results for all A
 
-        if (self.FLAG.read() & self.FLAG_H) != 0 or (self.A.read() & 0x0F) > 0x09:
-            carry, _ = self.A.incr(0x06)
+        # carry = False
+        # if (self.FLAG.read() & self.FLAG_H) != 0 or (self.A.read() & 0x0F) > 0x09:
+        #     carry, _ = self.A.incr(0x06)
 
-        if (self.FLAG.read() & self.FLAG_C) != 0 or (self.A.read() & 0xF0) > 0x90:
-            new_carry, _ = self.A.incr(0x60)
-            carry |= new_carry
+        # if (self.FLAG.read() & self.FLAG_C) != 0 or (self.A.read() & 0xF0) > 0x90:
+        #     new_carry, _ = self.A.incr(0x60)
+        #     carry |= new_carry
 
+        # self.FLAG.write(0x00, self.FLAG_H)
+        # self.FLAG.write(0xFF if carry else 0x00, self.FLAG_C)
+        # self.FLAG.write(0xFF if self.A.read() == 0 else 0x00, self.FLAG_Z)
+
+        a = self.A.read()
+        if (self.FLAG.read() & self.FLAG_N) == 0:
+            if (self.FLAG.read() & self.FLAG_H) != 0 or (a & 0xF) > 9:
+                a += 0x06
+            if (self.FLAG.read() & self.FLAG_C) != 0 or a > 0x9F:
+                a += 0x60
+        else:        
+            if (self.FLAG.read() & self.FLAG_H) != 0:
+                a = (a-0x06) & 0xFF
+            if (self.FLAG.read() & self.FLAG_C) != 0:
+                a = (a-0x60) & 0x1FF
+        
         self.FLAG.write(0x00, self.FLAG_H)
-        self.FLAG.write(0xFF if carry else 0x00, self.FLAG_C)
-        self.FLAG.write(0xFF if self.A.read() == 0 else 0x00, self.FLAG_Z)
+        FLAG = self.FLAG.read()
+        FLAG |= self.FLAG_C if (a & 0x100) != 0 else 0x00
+        self.FLAG.write(FLAG)
+        a &= 0xFF
+        self.FLAG.write(0xFF if a == 0 else 0x00, self.FLAG_Z)
+        self.A.write(a)
 
         self.PC.incr(1)
+
         return 4
 
     def op_cpl(self):
@@ -562,11 +595,6 @@ class CPU(object):
 
     def op_ret(self, conditional_idx, enable_interrupts):
         if conditional_idx is None or self.cc[conditional_idx]():
-            if conditional_idx is None:
-                print "PC", hex(self.PC.read())
-                print "SP", hex(self.SP.read())
-                print "(SP)", hex(self.bus.read_16(self.SP.read()))
-                print "(SP)", hex(self.bus.read(self.SP.read())), hex(self.bus.read(self.SP.read()+1))
             if enable_interrupts:
                 self._IME = True
             self.PC.write(self.bus.read_16(self.SP.read()))
@@ -574,9 +602,6 @@ class CPU(object):
             # TODO: color matrix says unconditional ret is 16, pdf says 8
             # which is it???
             # nb: same deal with RETI
-            if conditional_idx is None: 
-                print hex(self.PC.read())
-                # raise debug.DEBUGGER_TRIGGER("CPU RET PAUSE")
             return 16 if conditional_idx is None else 20
         else:
             self.PC.incr(1)
@@ -595,7 +620,7 @@ class CPU(object):
 
     def op_rst(self, new_pc):
         self.SP.incr(-2)
-        self.bus.write_16(self.SP.read(),self.PC.read())
+        self.bus.write_16(self.SP.read(),self.PC.read()+1)
 
         self.PC.write(new_pc)
         return 32
@@ -607,10 +632,12 @@ class CPU(object):
         return 4
 
     def op_halt(self):
+        self._halted = True
         if self._IME:
-            self._halted = True
             self.PC.incr(1)
         else:
+            # TODO: make sure this is exactly right
+            # see discussion on https://www.reddit.com/r/EmuDev/comments/5ie3k7/infinite_loop_trying_to_pass_blarggs_interrupt/
             self.PC.incr(2)
         return 4
 
@@ -636,8 +663,9 @@ class CPU(object):
 
         if with_carry:
             if (self.FLAG.read() & self.FLAG_C) != 0:
+
                 (second_carry, second_half_carry) = self.A.incr(1 if not negative else -1)
-                # TODO: not sure if this is correct behavior:
+
                 carry |= second_carry
                 half_carry |= second_half_carry
 
@@ -664,9 +692,14 @@ class CPU(object):
 
         self.A.write(operation(self.A.read(), val))
 
+        if operation == operator.and_:
+            H_val = 0xFF
+        else:
+            H_val = 0x00
+
         self.FLAG.write(0xFF if self.A.read() == 0 else 0x00, self.FLAG_Z)
         self.FLAG.write(0x00, self.FLAG_N)
-        self.FLAG.write(0xFF, self.FLAG_H)
+        self.FLAG.write(H_val, self.FLAG_H)
         self.FLAG.write(0x00, self.FLAG_C)
 
         self.PC.incr(op_bytes)
@@ -748,13 +781,13 @@ class CPU(object):
                     return lambda: self.op_ld_imm_8(self.r[y])
             elif z == 7:
                 if y == 0:
-                    return lambda: self.op_rot(self.A, False, True, True)
-                elif y == 1:
-                    return lambda: self.op_rot(self.A, False, False, True)
-                elif y == 2:
                     return lambda: self.op_rot(self.A, False, True, False)
-                elif y == 3:
+                elif y == 1:
                     return lambda: self.op_rot(self.A, False, False, False)
+                elif y == 2:
+                    return lambda: self.op_rot(self.A, False, True, True)
+                elif y == 3:
+                    return lambda: self.op_rot(self.A, False, False, True)
                 elif y == 4:
                     return self.op_daa
                 elif y == 5:
@@ -867,31 +900,35 @@ class CPU(object):
     def core_dump(self):
         out = []
         # TODO: make sure these bus/reg reads don't have side effects
-        out.append("PC 0x%04X" % self.PC.read())
-        out.append("op 0x%02X" % self.bus.read(self.PC.read()))
-        out.append("imm 0x%04X" % self.bus.read_16(self.PC.read()+1))
-        out.append("SP 0x%04X" % self.SP.read())
-
-        for reg in self.r + [self.FLAG]:
-            if not reg:
-                continue
-            out.append("%s:\t0x%s " % (reg.name, hex(reg.read())[2:].rjust(reg.size/4,"0")))
-            if reg.name == "FLAG":
-                if reg.read() & self.FLAG_C:
-                    out[-1] += "C "
-                if reg.read() & self.FLAG_Z:
-                    out[-1] += "Z "
-                if reg.read() & self.FLAG_N:
-                    out[-1] += "N "
-                if reg.read() & self.FLAG_H:
-                    out[-1] += "H "
+        op = self.bus.read(self.PC.read())
+        if op == 0xCB:
+            op = "0xCB%02X" % self.bus.read(self.PC.read()+1)
+            imm_offset = 2
+        else:
+            op = "0x%02X" % op
+            imm_offset = 1
+        out.append("PC\t0x%04X = %s" % (self.PC.read(), op))
+        out.append("imm\t0x%04X" % self.bus.read_16(self.PC.read()+imm_offset))
+        out.append("SP\t0x%04X" % self.SP.read())
+        out.append("BC\t0x%04X" % self.BC.read())
+        out.append("DE\t0x%04X" % self.DE.read())
+        out.append("HL\t0x%04X" % self.HL.read())
+        out.append("AF\t0x%04X" % self.AF.read())
+        if self.F.read() & self.FLAG_Z:
+            out[-1] += " Z"
+        if self.F.read() & self.FLAG_N:
+            out[-1] += " N"
+        if self.F.read() & self.FLAG_H:
+            out[-1] += " H"
+        if self.F.read() & self.FLAG_C:
+            out[-1] += " C"
         return "\n".join(out)
 
     def service_interrupts(self):
         # TODO: pull out magic numbers
         # TODO: investigate hardware behavior if IF bits 5-7
         # are set (undefined interrupts :o ??)
-        if self._IME:
+        if self._IME or self._halted:
             IE = self.bus.read(0xFFFF)
             IF = self.bus.read(0xFF0F)
             interrupts = IE & IF
@@ -899,21 +936,26 @@ class CPU(object):
                 for idx in xrange(8):
                     interrupt_mask = 1 << idx
                     if (interrupts & interrupt_mask) != 0:
-                        # Clear serviced IRQ and disable interrupts
-                        self.bus.write(0xFF0F, IF & ~interrupt_mask)
-                        self._IME = False
-
                         # Make sure to un-halt the CPU
                         self._halted = False
                         self._stopped = False
 
-                        # Push PC onto stack
-                        self.SP.incr(-2)
-                        self.bus.write_16(self.SP.read(),self.PC.read())
+                        if self._IME:
+                            # Clear serviced IRQ and disable interrupts
+                            self.bus.write(0xFF0F, IF & ~interrupt_mask)
+                            self._IME = False
 
-                        # Jump to handler!
-                        self.PC.write(0x40 + 8*idx)
-                        return 5
+                            # Push PC onto stack
+                            self.SP.incr(-2)
+                            self.bus.write_16(self.SP.read(),self.PC.read())
+
+                            # Jump to handler!
+                            self.PC.write(0x40 + 8*idx)
+                            return 5
+                        else:
+                            # TODO: figure out what this value should actually
+                            # be (maybe read TCAGBD more?)
+                            return 0
             return 0
         else:
             return 0

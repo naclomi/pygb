@@ -99,6 +99,34 @@ class TIMER(gb_bus.BUS_OBJECT):
         else:
             raise Exception("timer doesn't know WHAT the fuck to do")
 
+class SERIAL(gb_bus.BUS_OBJECT):
+    def __init__(self):
+        super(SERIAL, self).__init__()
+        self.data = 0
+        self.control = 0
+        # TODO: implement actual serial behavior
+
+    def bus_read(self, addr):
+        if addr == 0: # SB
+            return self.data
+        elif addr == 1: # SC
+            return self.control
+        else:
+            raise Exception("serial doesn't know WHAT the fuck to do")
+
+    def bus_write(self, addr, value):
+        if addr == 0: # SB
+            # TODO: this print is useful for blargg's tests, but parameterize
+            # it so it doesn't barf out on other roms:
+            print chr(value),
+            self.data = value & 0xFF
+        elif addr == 1: # SC
+            self.control = value & 0xFF
+        else:
+            raise Exception("serial doesn't know WHAT the fuck to do")
+
+
+
 class JOYPAD(gb_bus.BUS_OBJECT):
     def __init__(self):
         super(JOYPAD, self).__init__()
@@ -199,17 +227,12 @@ class GAMEBOY(object):
         self.timer = TIMER()
         self.bus.attach(self.timer, 0xFF04, 0xFF07)
 
-        # Serial dummy hardware
-        self.serial_data = gb_cpu.REG("SB", 8)
-        self.bus.attach(self.serial_data, 0xFF01, 0xFF01)
-        self.serial_control = gb_cpu.REG("SC", 8)
-        self.bus.attach(self.serial_control, 0xFF02, 0xFF02)
+        self.serial = SERIAL()
+        self.bus.attach(self.serial, 0xFF01, 0xFF02)
 
         self.cpu = gb_cpu.CPU(self.bus)
 
     def advance(self):
-        # TODO: double-check signed arithmetic everywhere. does C/H work
-        # as borrow flags when doing SUB/DEC/etc?
         # TODO: implement the STOP instruction correctly
 
         if not self.cpu._halted:
@@ -264,9 +287,6 @@ class GAMEBOY(object):
         # TODO: this DMA blockade seems to break tetris, investigate more
         # closely what's going on
         # seems like it's lasting a *little bit* too long
-        #
-        # TODO: make sure this DMA blockade covers MBCs once they're
-        # implemented
         if self.video_driver.dma_active():
             self.cart.allow_bus_access(False)
             for ram_bank in self.ram:
@@ -279,13 +299,17 @@ class GAMEBOY(object):
 
 if __name__=="__main__":
     if len(sys.argv) < 2:
-        print "Usage: %s [-v] [-d] [--paused] ROMFILE" % sys.argv[0]
+        print "Usage: %s [-v] [-d] [--paused] [--log LOGFILE] ROMFILE" % sys.argv[0]
         sys.exit(1)
 
     # TODO: use argparser
     debug = "-d" in sys.argv or "--debug" in sys.argv
     verbose = "-v" in sys.argv
     start_paused = "--paused" in sys.argv
+    if "--log" in sys.argv:
+        log_file = sys.argv[sys.argv.index("--log")+1]
+        print "Logging to " + log_file
+        logger = gb_debug.Tee(log_file, "w")
 
     pygame.init()
     pygame.display.set_caption("pygb")

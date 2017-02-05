@@ -42,6 +42,7 @@ class BUS(object):
 
     def read_16(self, addr):
         return self.read(addr) | (self.read(addr+1) << 8)
+        
 
     def write_16(self, addr, value):
         self.write(addr, (value >> 0) & 0xFF)

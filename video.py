@@ -127,12 +127,10 @@ class VIDEO(object):
                 # at origin
                 self.window.fill(self.colors[self.vregs.bgp[0]])
 
-            scx = self.vregs.scx
-            # TODO: temporarily disable scy for blargg's tests
-            scy = 0
-            #scy = self.vregs.scy
-            wx = self.vregs.wx
-            wy = self.vregs.wy
+            scx = 256 - self.vregs.scx
+            scy = 256 - self.vregs.scy
+            wx = 256 - self.vregs.wx
+            wy = 256 - self.vregs.wy
             data_select = self.vregs.map_data
 
             # Draw low-priority sprites
