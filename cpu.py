@@ -201,7 +201,6 @@ class CPU(object):
             self.op_compare # CP
         ]
         self.rot = [
-            # TODO: Double check for any differences between CB RLC A and RLC A
             lambda dst, from_memory: self.op_rot(dst, from_memory, True, False, True), # RLC
             lambda dst, from_memory: self.op_rot(dst, from_memory, False, False, True), # RRC
             lambda dst, from_memory: self.op_rot(dst, from_memory, True, True, True), # RL
@@ -322,39 +321,25 @@ class CPU(object):
         self.PC.incr(1)
         return 8
 
-    def op_ldhl_sp_imm(self):
-        # TODO: figure out if this is the right way to sign extend, and where to
-        # do it:
+    def op_add_sp(self, dst, long_op):
         r8 = self.bus.read(self.PC.read()+1)
+        sp = self.SP.read()
+        
+        half_carry = ((sp & 0x0F) + (r8 & 0x0F)) > 0x0F
+        carry = ((sp & 0xFF) + r8) > 0xFF
+
         if (r8 & 0x80) != 0:
             r8 |= 0xFF00
-        self.HL.write(r8)
-        self.op_add_16(self.HL, self.SP)
-        # We want to increment by 2, but op_add_16 above already incremented
-        # the PC by 1
-        self.PC.incr(1)
-        return 12
-
-    def op_add_sp(self):
-        # TODO: according to alex, 0xe8 and 0xf8:
-        # the values of the carry and halfcarry are
-        # computed on the low 8bits. but there are "gotchas" (see
-        # https://github.com/simias/gb-rs)
-
-        # TODO: figure out if this is the right way to sign extend, and where to
-        # do it:
-        r8 = self.bus.read(self.PC.read()+1)
-        if (r8 & 0x80) != 0:
-            r8 |= 0xFF00
-        (carry, half_carry) = self.SP.incr(r8)
 
         self.FLAG.write(0x00, self.FLAG_Z)
         self.FLAG.write(0x00, self.FLAG_N)
         self.FLAG.write(0xFF if half_carry else 0x00, self.FLAG_H)
         self.FLAG.write(0xFF if carry else 0x00, self.FLAG_C)
 
+        dst.write((r8+sp)&0xFFFF)
+
         self.PC.incr(2)
-        return 16
+        return 16 if long_op else 12
 
     def op_inc_16(self, dst, delta):
         (carry, half_carry) = dst.incr(delta)
@@ -383,23 +368,26 @@ class CPU(object):
         if from_memory:
             val = self.bus.read(val)
 
-        carry = (self.FLAG.read() & self.FLAG_C) != 0
-        val = carry << 8 | val
+        # This is probably a really slow way to do rotates but it's late and
+        # I'm tired and this is easy
+        val = map(lambda bit: bit=='1', bin(val)[2:].rjust(8))
+        if include_carry:
+            carry = (self.FLAG.read() & self.FLAG_C) != 0
+            val.insert(0, carry)
 
-        rot_bit_idx = 8 if include_carry else 7
         if left:
-            rot_bit = (val & (1 << rot_bit_idx)) != 0
-            val = val << 1
-            val |= rot_bit
+            rot_bit = val[0]
+            val = val[1:] + [rot_bit]
         else:
-            rot_bit = (val & 0x01) != 0
-            val = val >> 1
-            val |= rot_bit << rot_bit_idx
+            rot_bit = val[-1]
+            val = [rot_bit] + val[:-1]
 
-        self.FLAG.write(0xFF if (val & (1 << rot_bit_idx)) != 0 else 0x00, self.FLAG_C)
-        self.FLAG.write(0x00, self.FLAG_H)
-        self.FLAG.write(0x00, self.FLAG_N)
+        if include_carry:
+            self.FLAG.write(0xFF if val[0] else 0x00, self.FLAG_C)
+        else:
+            self.FLAG.write(0xFF if rot_bit else 0x00, self.FLAG_C)
 
+        val = reduce(lambda x,y:y|(x<<1),val)
         val = val & 0xFF
 
         if from_memory:
@@ -407,10 +395,15 @@ class CPU(object):
         else:
             dst.write(val)
 
-        # TODO: double-check this FLAG_Z behavior, CB instructions actually
-        # set Z appropriately while the color matrix says non-CB RLA/RLCA
-        # 0's it out. Not sure which is the true behavior:
-        self.FLAG.write(0xFF if val == 0 else 0x00, self.FLAG_Z)
+        # Set *almost* according to the miscellanea at:
+        # https://github.com/simias/gb-rs/blob/master/README.md
+        # but ignoring the suggestion that Z shouldn't be modified in RLCA
+        if cb_op:
+            self.FLAG.write(0xFF if val == 0 else 0x00, self.FLAG_Z)
+        else:
+            self.FLAG.write(0x00, self.FLAG_Z)
+        self.FLAG.write(0x00, self.FLAG_H)
+        self.FLAG.write(0x00, self.FLAG_N)
 
         self.PC.incr(2 if cb_op else 1)
         if cb_op:
@@ -817,11 +810,11 @@ class CPU(object):
                 elif y == 4:
                     return lambda: self.op_mem_store(self.IMMEDIATE_8, self.A, 0xFF00)
                 elif y == 5:
-                    return self.op_add_sp
+                    return lambda: self.op_add_sp(self.SP, True)
                 elif y == 6:
                     return lambda: self.op_mem_load(self.A, 0xFF00)
                 elif y == 7:
-                    return self.op_ldhl_sp_imm
+                    return lambda: self.op_add_sp(self.HL, False)
             elif z == 1:
                 if q == 0:
                     return lambda: self.op_mem_pop(self.rp2[p])
@@ -886,14 +879,15 @@ class CPU(object):
         z = (opcode & 0b00000111) >> 0
 
         from_memory = z == 6
+        dst_reg = self.HL if from_memory else self.r[z]
         if x == 0:
-            return lambda: self.rot[y](self.r[z], from_memory)
+            return lambda: self.rot[y](dst_reg, from_memory)
         elif x == 1:
-            return lambda: self.op_bit_test(y, self.r[z], from_memory)
+            return lambda: self.op_bit_test(y, dst_reg, from_memory)
         elif x == 2:
-            return lambda: self.op_bit_modify(y, self.r[z], True, from_memory)
+            return lambda: self.op_bit_modify(y, dst_reg, True, from_memory)
         elif x == 3:
-            return lambda: self.op_bit_modify(y, self.r[z], False, from_memory)
+            return lambda: self.op_bit_modify(y, dst_reg, False, from_memory)
 
         raise CPUOpcodeException(opcode)
 
