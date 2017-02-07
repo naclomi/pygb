@@ -26,7 +26,7 @@ class BUS(object):
 
         # TODO: don't allow this:
         print "WARNING: Read from HiZ address 0x%04lX" % addr
-        return 0x00
+        return 0xFF
         # raise Exception("Read from HiZ address 0x%04lX" % addr)
 
     def write(self, addr, value, force=False):

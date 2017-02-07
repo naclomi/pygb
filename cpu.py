@@ -145,7 +145,6 @@ class CPU(object):
         self.f = 4.194304e6
         self.T_cyc = 1 / self.f # 2.384185791015625e-07
 
-        # TODO: fill in initial values for everything (see The PDF pg18)
         self._IME = True
         self._stopped = False
         self._halted = False
@@ -563,8 +562,6 @@ class CPU(object):
             return 12
 
     def op_jr(self):
-        # TODO: figure out if this is the right way to sign extend, and where to
-        # do it:
         r8 = self.bus.read(self.PC.read()+1)
         if (r8 & 0x80) != 0:
             r8 |= 0xFF00
@@ -574,8 +571,6 @@ class CPU(object):
 
     def op_jr_condition(self, conditional_idx):
         if conditional_idx is None or self.cc[conditional_idx]():
-            # TODO: figure out if this is the right way to sign extend, and where to
-            # do it:
             r8 = self.bus.read(self.PC.read()+1)
             if (r8 & 0x80) != 0:
                 r8 |= 0xFF00

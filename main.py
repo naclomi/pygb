@@ -125,8 +125,6 @@ class SERIAL(gb_bus.BUS_OBJECT):
         else:
             raise Exception("serial doesn't know WHAT the fuck to do")
 
-
-
 class JOYPAD(gb_bus.BUS_OBJECT):
     def __init__(self):
         super(JOYPAD, self).__init__()
@@ -200,6 +198,7 @@ class JOYPAD(gb_bus.BUS_OBJECT):
 class GAMEBOY(object):
     def __init__(self, rom_bin):
         self.debug_trigger = False
+        self.exit_trigger = False
 
         self.bus = gb_bus.BUS()
 
@@ -235,13 +234,15 @@ class GAMEBOY(object):
     def advance(self):
         # TODO: implement the STOP instruction correctly
 
-        if not self.cpu._halted:
+        if not self.cpu._halted and not self.cpu._stopped:
             opcode = self.bus.read(self.cpu.PC.read())
             op = self.cpu.decode(opcode)
             cycles = op()
         else:
             # NOP if halted
             cycles = 4
+
+        # TODO: blank screen on STOP instr
 
         # TODO: not sure where/when/how often to do this, putting it here
         # for now so we only have to call timer.advance() once:
@@ -269,10 +270,12 @@ class GAMEBOY(object):
             pygame.K_TAB: "select",
         }
         for event in pygame.event.get(): 
-            if event.type == pygame.QUIT: 
-                self.cpu.op_stop()
+            if event.type == pygame.QUIT:
+                self.exit_trigger = True
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_PAUSE:
+                if event.key == pygame.K_ESCAPE:
+                    self.exit_trigger = True
+                elif event.key == pygame.K_PAUSE:
                     self.debug_trigger = True
                 elif event.key in key_bindings:
                     keys[key_bindings[event.key]] = True
@@ -332,7 +335,9 @@ if __name__=="__main__":
         while running:
             try:
                 system.advance()
-                running = not system.cpu._stopped
+                # running = not system.cpu._stopped
+                if system.exit_trigger == True:
+                    running = False
                 if debug:
                     debugger.scan()
             except gb_debug.DEBUGGER_TRIGGER as e:
