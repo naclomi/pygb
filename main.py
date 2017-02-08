@@ -20,27 +20,24 @@ import cpu as gb_cpu
 class TIMER(gb_bus.BUS_OBJECT):
     def __init__(self):
         super(TIMER, self).__init__()
-        self.tick = 0.0
         self.clock = 0
+
 
         self.div_tick = 0.0
         self.div_clock = 0
-        
+
+        # TODO: these numbers are in the CPU class too, pull them out
+        # somewhere:
+        self.f = 4.194304e6
+        self.div_T = 1 / self.f # 2.384185791015625e-07
+
         self.enabled = 0
         self.speed_select = 0
         
-        self.frequencies = [4096,262144,65536,16384]
-        self.periods = [1.0/f for f in self.frequencies]
+        self.periods = [0x200, 0x008, 0x020, 0x080]
 
+        self.reload_tick = 0
         self.load_value = 0
-
-        # ok why is the div register in the *middle* of the selectable
-        # frequency spectrum? time to break out the PLL textbook...
-        self.div_T = self.periods[3]
-
-        # TODO: it would be fun to implement this with everything deriving from
-        # one reference clock and all the obscure glitch behavior described by
-        # the pandocs wiki
 
         self.reset()
 
@@ -52,13 +49,31 @@ class TIMER(gb_bus.BUS_OBJECT):
 
     def advance(self, delta):
         # Note that delta is **SIMULATED** time
-        if self.enabled == 1:
-            T = self.periods[self.speed_select]
-            self.tick += delta
-            if self.tick >= T:
-                self.tick -= T
-                self.clock += 1
-                if self.clock > 255:
+        self.div_tick += delta
+
+        while self.div_tick >= self.div_T:
+            self.div_tick -= self.div_T
+
+            old_div_clock = self.div_clock
+            self.div_clock += 1
+            self.div_clock &= 0xFFFF
+
+            if self.enabled == 1:
+                bit_idx = self.periods[self.speed_select]
+                tick_bit = (self.div_clock & bit_idx) != 0
+                old_tick_bit = (old_div_clock & bit_idx) != 0
+
+                if old_tick_bit and not tick_bit:
+                    self.clock += 1
+                    if self.clock > 255:
+                        self.clock = 0
+                        self.reload_tick = 4
+
+            # TODO: implement the remaining timer oddities (such as TMA latching
+            # and TIMA write ignores)
+            if self.reload_tick > 0:
+                self.reload_tick -= 1
+                if self.reload_tick == 0:
                     self.clock = self.load_value
                     # Trigger an interrupt
                     # TODO: pull these magic numbers out somewhere
@@ -66,15 +81,10 @@ class TIMER(gb_bus.BUS_OBJECT):
                     IF_state |= 0x4
                     self.bus.write(0xFF0F, IF_state)
 
-        self.div_tick += delta
-        if self.div_tick >= self.div_T:
-            self.div_tick -= self.div_T
-            self.div_clock += 1
-            self.div_clock &= 0xFF
 
     def bus_read(self, addr):
         if addr == 0: # DIV
-            return self.div_clock
+            return self.div_clock >> 8
         elif addr == 1: # TIMA
             return self.clock
         elif addr == 2: # TMA
@@ -88,9 +98,9 @@ class TIMER(gb_bus.BUS_OBJECT):
     def bus_write(self, addr, value):
         if addr == 0: # DIV
             self.div_clock = 0
-            self.clock = 0
         elif addr == 1: # TIMA
             self.clock = value & 0xFF
+            self.reload_tick = 0
         elif addr == 2: # TMA
             self.load_value = value & 0xFF
         elif addr == 3: # TAC
@@ -249,12 +259,7 @@ class GAMEBOY(object):
         # TODO: also, should this be an add or a direct assign?
         cycles += self.cpu.service_interrupts()
 
-        # TODO: this seems to help the DMA calculation? uhhhh????
-        # cycles *= 4
-
         T_op = self.cpu.T_cyc * cycles
-        # TODO: this is useful debug output:
-        # print T_op, cycles
         self.timer.advance(T_op)
 
         # TODO: decompose this and allow for configurable keybindings

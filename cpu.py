@@ -255,12 +255,15 @@ class CPU(object):
     def op_mem_store(self, dst, src, addr_offset=0):
         # TODO: combine this with op_mem_store_indirect - the only real
         # difference is the PC incr at the end
+        # TODO: two separate ops use this function, and one uses 8 bit immediate
+        # data while the other uses 16. find a nicer way to figure out which
+        # to use, rather than testing addr_offset
         addr = dst.read()
         addr += addr_offset
         addr &= 0xFFFF
         self.bus.write(addr, src.read())
         self.PC.incr(1+dst.size/8)
-        return 12 if src is not self.A else 16
+        return 12 if addr_offset != 0 else 16
 
     def op_mem_store_sp(self):
         self.bus.write_16(self.bus.read_16(self.PC.read()+1), self.SP.read())
@@ -279,14 +282,16 @@ class CPU(object):
         if addr_offset == 0:
             addr = self.bus.read_16(self.PC.read()+1)
             imm_bytes = 2
+            cycles = 16
         else:
             addr = self.bus.read(self.PC.read()+1)
             addr += addr_offset
             imm_bytes = 1
+            cycles = 12
         addr &= 0xFFFF
         dst.write(self.bus.read(addr))
         self.PC.incr(1+imm_bytes)
-        return 12 if dst is not self.A else 16
+        return cycles
 
     def op_mem_pop(self, dst):
         dst.write(self.bus.read_16(self.SP.read()))
@@ -298,7 +303,7 @@ class CPU(object):
         self.SP.incr(-2)
         self.bus.write_16(self.SP.read(), src.read())
         self.PC.incr(1)
-        return 116
+        return 16
 
     def op_mem_load_indirect(self, addr_reg, dst, addr_delta=0, addr_offset=0):
         addr = addr_reg.read()
@@ -470,7 +475,9 @@ class CPU(object):
         self.FLAG.write(0xFF if (val & (1 << idx)) == 0 else 0x00, self.FLAG_Z)
 
         self.PC.incr(2)
-        return 16 if from_memory else 8
+        # TODO: is color matrix wrong? blargg expects 12
+        # return 16 if from_memory else 8
+        return 12 if from_memory else 8
 
     def op_bit_modify(self, idx, dst, reset, from_memory):
         if not from_memory:            
@@ -611,7 +618,9 @@ class CPU(object):
         self.bus.write_16(self.SP.read(),self.PC.read()+1)
 
         self.PC.write(new_pc)
-        return 32
+        # TODO: is color matrix wrong? blargg expects 16
+        # return 32
+        return 16
 
     def op_change_interrupts_delayed(self, enabled):
         # TODO: how to do the delay part?
