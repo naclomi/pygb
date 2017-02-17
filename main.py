@@ -56,6 +56,8 @@ class TIMER(gb_bus.BUS_OBJECT):
 
             old_div_clock = self.div_clock
             self.div_clock += 1
+
+            # TODO: can probably pull this out of the while loop for performance gain:
             self.div_clock &= 0xFFFF
 
             if self.enabled == 1:
@@ -246,8 +248,7 @@ class GAMEBOY(object):
 
         if not self.cpu._halted and not self.cpu._stopped:
             opcode = self.bus.read(self.cpu.PC.read())
-            op = self.cpu.decode(opcode)
-            cycles = op()
+            cycles = self.cpu.decode(opcode)
         else:
             # NOP if halted
             cycles = 4
@@ -305,6 +306,39 @@ class GAMEBOY(object):
                 ram_bank.bus_enabled = True
 
 
+def main(system, debugger):
+    n_instr = 0
+    n_cyc = 0
+    running = True
+    while running:
+        try:
+            system.advance()
+            # running = not system.cpu._stopped
+            if system.exit_trigger == True:
+                running = False
+            if debugger is not None:
+                debugger.scan()
+        except gb_debug.DEBUGGER_TRIGGER as e:
+            if debugger is not None:
+                traceback.print_exc()
+                debugger.start()
+            else:
+                raise
+        except Exception:
+            traceback.print_exc()
+            if debug:
+                debugger.start()
+            else:
+                print "------------"
+                print "CORE DUMP"
+                print system.cpu.core_dump()
+                print "------------"
+            running = False
+
+        n_instr += 1
+        n_cyc += 1
+    return n_instr, n_cyc
+
 if __name__=="__main__":
     if len(sys.argv) < 2:
         print "Usage: %s [-v] [-d] [--paused] [--log LOGFILE] ROMFILE" % sys.argv[0]
@@ -312,6 +346,7 @@ if __name__=="__main__":
 
     # TODO: use argparser
     debug = "-d" in sys.argv or "--debug" in sys.argv
+    profile = "--profile" in sys.argv
     verbose = "-v" in sys.argv
     start_paused = "--paused" in sys.argv
     if "--log" in sys.argv:
@@ -330,40 +365,17 @@ if __name__=="__main__":
             debugger = gb_debug.DEBUGGER(system, verbose=verbose)
             if start_paused:
                 system.debug_trigger = True
+        else:
+            debugger = None
 
-        print "Starting execution"
+        if profile:
+            import cProfile
+            cProfile.run('main(system, debugger)')
+        else:
+            print "Starting execution"
+            T_start = time.time()
+            n_instr, n_cyc = main(system, debugger)
+            T_end = time.time()
+            print "Executed %i instructions in %f seconds (%f simulated)" % (n_instr, T_end-T_start, n_cyc*system.cpu.T_cyc)
 
-        n_instr = 0
-        n_cyc = 0
-        T_start = time.time()
-        running = True
-        while running:
-            try:
-                system.advance()
-                # running = not system.cpu._stopped
-                if system.exit_trigger == True:
-                    running = False
-                if debug:
-                    debugger.scan()
-            except gb_debug.DEBUGGER_TRIGGER as e:
-                if debug:
-                    traceback.print_exc()
-                    debugger.start()
-                else:
-                    raise
-            except Exception:
-                traceback.print_exc()
-                if debug:
-                    debugger.start()
-                else:
-                    print "------------"
-                    print "CORE DUMP"
-                    print system.cpu.core_dump()
-                    print "------------"
-                running = False
-
-            n_instr += 1
-            n_cyc += 1
-        T_end = time.time()
-        print "Executed %i instructions in %f seconds (%f simulated)" % (n_instr, T_end-T_start, n_cyc*system.cpu.T_cyc)
 

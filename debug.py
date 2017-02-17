@@ -22,9 +22,10 @@ class DEBUGGER_TRIGGER(Exception):
     pass
 
 class DEBUGGER(object):
-    def __init__(self, system, verbose=False):
+    def __init__(self, system, verbose=False, trace=0):
         self.system = system
         self.breakpoints = {}
+        self.trace_buffer = []
 
         def manual_trigger():
             val = self.system.debug_trigger 
@@ -69,6 +70,14 @@ class DEBUGGER(object):
             self.system.debug_trigger = True
             sys.exit(0xBADBEEF) # :B
 
+        self.trace = trace
+        def set_trace(tr=None):
+            if tr is not None:
+                if type(tr) is not int:
+                    raise TypeError
+                self.trace = tr
+            return self.trace
+
         self.verbose = verbose
         def en_verbose(en=None):
             if en is not None:
@@ -83,6 +92,7 @@ class DEBUGGER(object):
         self.debug_locals["new"] = new
         self.debug_locals["instr"] = instr
         self.debug_locals["step"] = step
+        self.debug_locals["set_trace"] = set_trace
         self.debug_locals["verbose"] = en_verbose
         self.debug_locals["load"] = load
         self.debug_locals.update(self.system.__dict__)
@@ -92,6 +102,11 @@ class DEBUGGER(object):
 
     def scan(self):
         triggered = []
+
+        if self.trace != 0:
+            self.trace_buffer.append(self.system.cpu.core_dump())
+            if self.trace > 0 and len(self.trace_buffer) > self.trace:
+                self.trace_buffer.pop(0)
 
         for break_name, breakpoint in self.breakpoints.items():
             try:

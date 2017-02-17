@@ -20,6 +20,7 @@ class REG(bus.BUS_OBJECT):
 
     def write(self, value, mask=None):
         value &= self.mask
+        # TODO: split into masked_write and write
         if mask is None:
             self.value = value
         else:
@@ -33,6 +34,10 @@ class REG(bus.BUS_OBJECT):
         return self.write(value)
 
     def incr(self, delta):
+        self.value += delta
+        self.value &= self.mask
+
+    def flagged_incr(self, delta):
         decr = delta < 0
 
         if decr:
@@ -73,11 +78,16 @@ class FUSED_REG(object):
         else:
             lo_mask = mask & self.reg_lo.mask
             hi_mask = (mask >> self.reg_lo.size) & self.reg_hi.mask
+        # TODO: don't use write method, just reach write in and do it
         self.reg_lo.write(value & self.reg_lo.mask, lo_mask)
         value = value >> self.reg_lo.size
         self.reg_hi.write(value & self.reg_hi.mask, hi_mask)
 
     def incr(self, delta):
+        # TODO: don't hardcode width:
+        self.write((self.read()+delta)&0xFFFF)
+
+    def flagged_incr(self, delta):
         decr = delta < 0
         value = self.read()
         # TODO: don't hardcode these:
@@ -124,6 +134,10 @@ class IMMEDIATE_REG(object):
         raise Exception("Cannot write to immediate argument")
 
     def incr(self, delta):
+        # TODO: better exception class for this:
+        raise Exception("Cannot write to immediate argument")
+
+    def flagged_incr(self, delta):
         # TODO: better exception class for this:
         raise Exception("Cannot write to immediate argument")
 
@@ -316,7 +330,7 @@ class CPU(object):
         return 8
 
     def op_add_16(self, dst, src):
-        (carry, half_carry) = dst.incr(src.read())
+        (carry, half_carry) = dst.flagged_incr(src.read())
 
         self.FLAG.write(0, self.FLAG_N)
         self.FLAG.write(0xFF if half_carry else 0x00, self.FLAG_H)
@@ -346,12 +360,12 @@ class CPU(object):
         return 16 if long_op else 12
 
     def op_inc_16(self, dst, delta):
-        (carry, half_carry) = dst.incr(delta)
+        (carry, half_carry) = dst.flagged_incr(delta)
         self.PC.incr(1)
         return 8
 
     def op_inc_8(self, dst, delta):
-        (_, half_carry) = dst.incr(delta)
+        (_, half_carry) = dst.flagged_incr(delta)
 
         self.FLAG.write(0xFF if half_carry else 0x00, self.FLAG_H)
         self.FLAG.write(0xFF if delta < 0 else 0x00, self.FLAG_N)
@@ -500,10 +514,10 @@ class CPU(object):
 
         # carry = False
         # if (self.FLAG.read() & self.FLAG_H) != 0 or (self.A.read() & 0x0F) > 0x09:
-        #     carry, _ = self.A.incr(0x06)
+        #     carry, _ = self.A.flagged_incr(0x06)
 
         # if (self.FLAG.read() & self.FLAG_C) != 0 or (self.A.read() & 0xF0) > 0x90:
-        #     new_carry, _ = self.A.incr(0x60)
+        #     new_carry, _ = self.A.flagged_incr(0x60)
         #     carry |= new_carry
 
         # self.FLAG.write(0x00, self.FLAG_H)
@@ -656,12 +670,12 @@ class CPU(object):
             long_op = True
             op_bytes += 1
 
-        (carry, half_carry) = self.A.incr(val if not negative else -val)
+        (carry, half_carry) = self.A.flagged_incr(val if not negative else -val)
 
         if with_carry:
             if (self.FLAG.read() & self.FLAG_C) != 0:
 
-                (second_carry, second_half_carry) = self.A.incr(1 if not negative else -1)
+                (second_carry, second_half_carry) = self.A.flagged_incr(1 if not negative else -1)
 
                 carry |= second_carry
                 half_carry |= second_half_carry
@@ -723,157 +737,157 @@ class CPU(object):
         if x == 0:
             if z == 0:
                 if y == 0:
-                    return self.op_nop
+                    return self.op_nop()
                 elif y == 1:
-                    return self.op_mem_store_sp
+                    return self.op_mem_store_sp()
                 elif y == 2:
-                    return self.op_stop
+                    return self.op_stop()
                 elif y == 3:
-                    return self.op_jr
+                    return self.op_jr()
                 elif 4 <= y <= 7:
-                    return lambda: self.op_jr_condition(y-4)
+                    return self.op_jr_condition(y-4)
             elif z == 1:
                 if q == 0:
-                    return lambda: self.op_ld_imm_16(self.rp[p])
+                    return self.op_ld_imm_16(self.rp[p])
                 elif q == 1:
-                    return lambda: self.op_add_16(self.HL, self.rp[p])
+                    return self.op_add_16(self.HL, self.rp[p])
             elif z == 2:
                 if q == 0:
                     if p == 0:
-                        return lambda: self.op_mem_store_indirect(self.BC, self.A)
+                        return self.op_mem_store_indirect(self.BC, self.A)
                     elif p == 1:
-                        return lambda: self.op_mem_store_indirect(self.DE, self.A)
+                        return self.op_mem_store_indirect(self.DE, self.A)
                     elif p == 2:
-                        return lambda: self.op_mem_store_indirect(self.HL, self.A, 1)
+                        return self.op_mem_store_indirect(self.HL, self.A, 1)
                     elif p == 3:
-                        return lambda: self.op_mem_store_indirect(self.HL, self.A, -1)
+                        return self.op_mem_store_indirect(self.HL, self.A, -1)
                 elif q == 1:
                     if p == 0:
-                        return lambda: self.op_mem_load_indirect(self.BC, self.A)
+                        return self.op_mem_load_indirect(self.BC, self.A)
                     elif p == 1:
-                        return lambda: self.op_mem_load_indirect(self.DE, self.A)
+                        return self.op_mem_load_indirect(self.DE, self.A)
                     elif p == 2:
-                        return lambda: self.op_mem_load_indirect(self.HL, self.A, 1)
+                        return self.op_mem_load_indirect(self.HL, self.A, 1)
                     elif p == 3:
-                        return lambda: self.op_mem_load_indirect(self.HL, self.A, -1)
+                        return self.op_mem_load_indirect(self.HL, self.A, -1)
             elif z == 3:
                 if q == 0:
-                        return lambda: self.op_inc_16(self.rp[p], 1)
+                        return self.op_inc_16(self.rp[p], 1)
                 elif q == 1:
-                        return lambda: self.op_inc_16(self.rp[p], -1)
+                        return self.op_inc_16(self.rp[p], -1)
             elif z == 4:
                 if y == 6:
-                    return lambda: self.op_mem_inc_8(self.HL, 1)
+                    return self.op_mem_inc_8(self.HL, 1)
                 else:
-                    return lambda: self.op_inc_8(self.r[y], 1)
+                    return self.op_inc_8(self.r[y], 1)
             elif z == 5:
                 if y == 6:
-                    return lambda: self.op_mem_inc_8(self.HL, -1)
+                    return self.op_mem_inc_8(self.HL, -1)
                 else:
-                    return lambda: self.op_inc_8(self.r[y], -1)
+                    return self.op_inc_8(self.r[y], -1)
             elif z == 6:
                 if y == 6:
-                    return lambda: self.op_mem_store_indirect_imm(self.HL)
+                    return self.op_mem_store_indirect_imm(self.HL)
                 else:
-                    return lambda: self.op_ld_imm_8(self.r[y])
+                    return self.op_ld_imm_8(self.r[y])
             elif z == 7:
                 if y == 0:
-                    return lambda: self.op_rot(self.A, False, True, False)
+                    return self.op_rot(self.A, False, True, False)
                 elif y == 1:
-                    return lambda: self.op_rot(self.A, False, False, False)
+                    return self.op_rot(self.A, False, False, False)
                 elif y == 2:
-                    return lambda: self.op_rot(self.A, False, True, True)
+                    return self.op_rot(self.A, False, True, True)
                 elif y == 3:
-                    return lambda: self.op_rot(self.A, False, False, True)
+                    return self.op_rot(self.A, False, False, True)
                 elif y == 4:
-                    return self.op_daa
+                    return self.op_daa()
                 elif y == 5:
-                    return self.op_cpl
+                    return self.op_cpl()
                 elif y == 6:
-                    return self.op_scf
+                    return self.op_scf()
                 elif y == 7:
-                    return self.op_ccf
+                    return self.op_ccf()
         elif x == 1:
             if z == 6 and y == 6:
-                return self.op_halt
+                return self.op_halt()
             elif z == 6:
-                return lambda: self.op_mem_load_indirect(self.HL, self.r[y])
+                return self.op_mem_load_indirect(self.HL, self.r[y])
             elif y == 6:
-                return lambda: self.op_mem_store_indirect(self.HL, self.r[z])
+                return self.op_mem_store_indirect(self.HL, self.r[z])
             else:
-                return lambda: self.op_ld(self.r[y], self.r[z])
+                return self.op_ld(self.r[y], self.r[z])
         elif x == 2:
             if z == 6:
-                return lambda: self.alu[y](self.HL, True)
+                return self.alu[y](self.HL, True)
             else:
-                return lambda: self.alu[y](self.r[z], False)
+                return self.alu[y](self.r[z], False)
         elif x == 3:
             if z == 0:
                 if y <= 3:
-                    return lambda: self.op_ret(y, False)
+                    return self.op_ret(y, False)
                 elif y == 4:
-                    return lambda: self.op_mem_store(self.IMMEDIATE_8, self.A, 0xFF00)
+                    return self.op_mem_store(self.IMMEDIATE_8, self.A, 0xFF00)
                 elif y == 5:
-                    return lambda: self.op_add_sp(self.SP, True)
+                    return self.op_add_sp(self.SP, True)
                 elif y == 6:
-                    return lambda: self.op_mem_load(self.A, 0xFF00)
+                    return self.op_mem_load(self.A, 0xFF00)
                 elif y == 7:
-                    return lambda: self.op_add_sp(self.HL, False)
+                    return self.op_add_sp(self.HL, False)
             elif z == 1:
                 if q == 0:
-                    return lambda: self.op_mem_pop(self.rp2[p])
+                    return self.op_mem_pop(self.rp2[p])
                 elif q == 1:
                     if p == 0:
-                        return lambda: self.op_ret(None, False)
+                        return self.op_ret(None, False)
                     elif p == 1:
-                        return lambda: self.op_ret(None, True)
+                        return self.op_ret(None, True)
                     elif p == 2:
-                        return lambda: self.op_jp(self.HL)
+                        return self.op_jp(self.HL)
                     elif p == 3:
-                        return lambda: self.op_ld(self.SP, self.HL)
+                        return self.op_ld(self.SP, self.HL)
             elif z == 2:
                 if y <= 3:
-                    return lambda: self.op_jp_imm(y)
+                    return self.op_jp_imm(y)
                 elif y == 4:
                     # TODO: color matrix says this is a 2 byte intsr, not sure
                     # whether to trust that or not
-                    return lambda: self.op_mem_store_indirect(self.C, self.A, 0, 0xFF00)
+                    return self.op_mem_store_indirect(self.C, self.A, 0, 0xFF00)
                 elif y == 5:
-                    return lambda: self.op_mem_store(self.IMMEDIATE_16, self.A)
+                    return self.op_mem_store(self.IMMEDIATE_16, self.A)
                 elif y == 6:
                     # TODO: color matrix says this is a 2 byte intsr, not sure
                     # whether to trust that or not
-                    return lambda: self.op_mem_load_indirect(self.C, self.A, 0, 0xFF00)
+                    return self.op_mem_load_indirect(self.C, self.A, 0, 0xFF00)
                 elif y == 7:
-                    return lambda: self.op_mem_load(self.A)
+                    return self.op_mem_load(self.A)
             elif z == 3:
                 if y == 0:
-                    return lambda: self.op_jp_imm(None)
+                    return self.op_jp_imm(None)
                 elif y == 1:
                     return self.cb_decode(self.bus.read(self.PC.read()+1))
                 elif 2 <= y <= 5:
                     pass
                 elif y == 6:
-                    return lambda: self.op_change_interrupts_delayed(False)
+                    return self.op_change_interrupts_delayed(False)
                 elif y == 7:
-                    return lambda: self.op_change_interrupts_delayed(True)
+                    return self.op_change_interrupts_delayed(True)
             elif z == 4:
                 if y <= 3:
-                    return lambda: self.op_call(y)
+                    return self.op_call(y)
                 else:
                     pass
             elif z == 5:
                 if q == 0:
-                    return lambda: self.op_mem_push(self.rp2[p])
+                    return self.op_mem_push(self.rp2[p])
                 elif q == 1:
                     if p == 0:
-                        return lambda: self.op_call(None)
+                        return self.op_call(None)
                     else:
                         pass
             elif z == 6:
-                return lambda: self.alu[y](self.IMMEDIATE_8, False)
+                return self.alu[y](self.IMMEDIATE_8, False)
             elif z == 7:
-                return lambda: self.op_rst(y*8)
+                return self.op_rst(y*8)
 
         raise CPUOpcodeException(opcode)
 
@@ -885,13 +899,13 @@ class CPU(object):
         from_memory = z == 6
         dst_reg = self.HL if from_memory else self.r[z]
         if x == 0:
-            return lambda: self.rot[y](dst_reg, from_memory)
+            return self.rot[y](dst_reg, from_memory)
         elif x == 1:
-            return lambda: self.op_bit_test(y, dst_reg, from_memory)
+            return self.op_bit_test(y, dst_reg, from_memory)
         elif x == 2:
-            return lambda: self.op_bit_modify(y, dst_reg, True, from_memory)
+            return self.op_bit_modify(y, dst_reg, True, from_memory)
         elif x == 3:
-            return lambda: self.op_bit_modify(y, dst_reg, False, from_memory)
+            return self.op_bit_modify(y, dst_reg, False, from_memory)
 
         raise CPUOpcodeException(opcode)
 

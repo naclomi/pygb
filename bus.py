@@ -11,42 +11,35 @@ class BUS(object):
 
         device.bus_addr_lo = addr_lo
         device.bus_addr_hi = addr_hi
-        self.devices.append(device)
-        self.devices.sort(key=lambda d: d.bus_addr_lo)
+        self.devices.append((device, addr_lo, addr_hi))
+        self.devices.sort(key=lambda d: d[0].bus_addr_lo)
         device.bus = self
         # TODO: ensure no overlap
 
     def read(self, addr, force=False):
-        for device in self.devices:
-            if device.bus_addr_lo <= addr <= device.bus_addr_hi:
+        for device, addr_lo, addr_hi in self.devices:
+            if addr_lo <= addr <= addr_hi:
                 if device.bus_enabled or force:
-                    return device.bus_read(addr - device.bus_addr_lo)
+                    return device.bus_read(addr - addr_lo)
                 else:
                     return 0xFF
-
-        # TODO: don't allow this:
         print "WARNING: Read from HiZ address 0x%04lX" % addr
         return 0xFF
-        # raise Exception("Read from HiZ address 0x%04lX" % addr)
 
     def write(self, addr, value, force=False):
-        for device in self.devices:
-            if device.bus_addr_lo <= addr <= device.bus_addr_hi:
+        for device, addr_lo, addr_hi in self.devices:
+            if addr_lo <= addr <= addr_hi:
                 if device.bus_enabled or force:
-                    device.bus_write(addr - device.bus_addr_lo, value)
+                    device.bus_write(addr - addr_lo, value)
                 return
-
-        # TODO: don't allow this:
         print "WARNING: Write to HiZ address 0x%04lX" % addr
-        # raise Exception("Write to HiZ address 0x%04lX" % addr)
 
     def read_16(self, addr):
         return self.read(addr) | (self.read(addr+1) << 8)
-        
 
     def write_16(self, addr, value):
-        self.write(addr, (value >> 0) & 0xFF)
-        self.write(addr+1, (value >> 8) & 0xFF)
+        self.write(addr, value & 0xFF)
+        self.write(addr+1, value >> 8)
 
 
 class BUS_OBJECT(object):

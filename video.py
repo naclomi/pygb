@@ -59,6 +59,7 @@ class VIDEO(object):
 
         self.frame = 0
 
+        self.enabled = False
         self.display_clock = 0.0
         self.dma_clock = 0.0
 
@@ -167,8 +168,7 @@ class VIDEO(object):
                         if data_select:
                             tile_idx = tile_map[map_idx]
                         else:
-                            # TODO: test this:
-                            tile_idx = 0x80 + tile_map[map_idx]
+                            tile_idx = 0x80 + (((tile_map[map_idx]&0xFF)-128)&0xFF)
                         bitmap = self.bg_tiles[tile_idx]
                         self.window.blit(bitmap, (
                             (x*8+scx%8)*self.scale, 
@@ -207,8 +207,7 @@ class VIDEO(object):
                         if data_select:
                             tile_idx = tile_map[map_idx]
                         else:
-                            # TODO: test this:
-                            tile_idx = 0x80 + tile_map[map_idx]
+                            tile_idx = 0x80 + (((tile_map[map_idx]&0xFF)-128)&0xFF)
                         bitmap = self.bg_tiles[tile_idx]
                         self.window.blit(bitmap, (
                             (x*8+wx-7)*self.scale, 
@@ -235,26 +234,30 @@ class VIDEO(object):
         pygame.display.flip()
 
     def advance(self, delta):
-        self.display_clock += delta
-
-        scan_clock = self.display_clock % self.T_scanline
 
         # TODO: implement scanline redraw
 
         # Handle OAM DMA
         if self.dma_active():
-            print "dma clock", util.time_str(self.dma_clock)
+            # TODO: good for debugging, but delete eventually:
+            # print "dma clock", util.time_str(self.dma_clock)
             self.dma_clock -= delta
             if self.dma_clock <= 0:
                 self.dma_clock = 0
                 self.vregs.dma_base = None
         else:
             if self.vregs.dma_base is not None:
-                print "dma clock", util.time_str(self.dma_clock)
+                # TODO: good for debugging, but delete eventually:
+                # print "dma clock", util.time_str(self.dma_clock)
                 self.dma_clock = self.T_dma - delta
                 self.vram_oam.dma(self.vregs.dma_base)
 
         if self.vregs.display_enable:
+            self.enabled = True
+
+            self.display_clock += delta
+            scan_clock = self.display_clock % self.T_scanline
+
             # Wrap display clock if we've refreshed the screen
             if self.display_clock >= self.T_refresh:
                     self.draw()
@@ -272,12 +275,14 @@ class VIDEO(object):
                     self.vram_map_0.bus_enabled = True
                     self.vram_map_1.bus_enabled = True
 
+                    # Trigger an interrupt
+                    # TODO: pull these magic numbers out somewhere
+                    IF_state = self.bus.read(0xFF0F)
+                    IF_state |= 0x1
                     if self.vregs.v_blank_int:
-                        # Trigger an interrupt
-                        # TODO: pull these magic numbers out somewhere
-                        IF_state = self.bus.read(0xFF0F)
-                        IF_state |= 0x1
-                        self.bus.write(0xFF0F, IF_state)
+                        IF_state |= 0x2
+                    self.bus.write(0xFF0F, IF_state)
+
             elif scan_clock <= self.T_mode2_edge:
                 # OAM
                 if self.vregs.mode != 2:
@@ -334,26 +339,29 @@ class VIDEO(object):
                     IF_state |= 0x2
                     self.bus.write(0xFF0F, IF_state)
         else:
-            # Reset state machine
-            self.display_clock = 0
-            
-            # Reset STAT
-            self.vregs.mode = 0
-            self.vregs.coincidence_flag = 0
-            self.vregs.h_blank_int = 0
-            self.vregs.v_blank_int = 0
-            self.vregs.oam_int = 0
-            self.vregs.coincidence_int = 0
-            self.vregs.ly = 0
+            if self.enabled:
+                self.enabled = False
 
-            # Force RAM ports open
-            self.vram_oam.bus_enabled = True
-            self.vram_tile.bus_enabled = True
-            self.vram_map_0.bus_enabled = True
-            self.vram_map_1.bus_enabled = True
+                # Reset state machine
+                self.display_clock = 0
+                
+                # Reset STAT
+                self.vregs.mode = 0
+                self.vregs.coincidence_flag = 0
+                self.vregs.ly = 0
+                # TODO: not sure, do these get reset or not?
+                # self.vregs.h_blank_int = 0
+                # self.vregs.v_blank_int = 0
+                # self.vregs.oam_int = 0
+                # self.vregs.coincidence_int = 0
 
-            # Clear screen
-            self.draw()
+                # Force RAM ports open
+                self.vram_oam.bus_enabled = True
+                self.vram_tile.bus_enabled = True
+                self.vram_map_0.bus_enabled = True
+                self.vram_map_1.bus_enabled = True
+
+                self.draw()
 
 class VIDEO_REGS(bus.BUS_OBJECT):
     def __init__(self):
