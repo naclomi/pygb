@@ -274,6 +274,8 @@ class CARTRIDGE(object):
         self.bus.attach(self.ram_N, 0xA000, 0xBFFF)
 
     def allow_bus_access(self, en):
-        self.rom_0.bus_enabled = en
-        self.rom_N.bus_enabled = en
+        # TODO: not sure what pars of cart should be disabled during DMA
+        # blockade, opus5 breaks if ROM is included
+        # self.rom_0.bus_enabled = en
+        # self.rom_N.bus_enabled = en
         self.ram_N.bus_enabled = en

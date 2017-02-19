@@ -223,8 +223,8 @@ class GAMEBOY(object):
         self.hram = gb_memory.RAM(127)
         self.bus.attach(self.hram, 0xFF80, 0xFFFE)
 
-        self.video_driver = gb_video.VIDEO(self.bus)
-        self.sound_driver = gb_sound.SOUND(self.bus)
+        self.ppu = gb_video.VIDEO(self.bus)
+        self.apu = gb_sound.SOUND(self.bus)
 
         self.joypad = JOYPAD()
         self.bus.attach(self.joypad, 0xFF00, 0xFF00)
@@ -291,12 +291,12 @@ class GAMEBOY(object):
         if len(keys) > 0:
             self.joypad.update(keys)
 
-        self.video_driver.advance(T_op)
+        self.ppu.advance(T_op)
 
         # TODO: this DMA blockade seems to break tetris, investigate more
         # closely what's going on
         # seems like it's lasting a *little bit* too long
-        if self.video_driver.dma_active():
+        if self.ppu.dma_active():
             self.cart.allow_bus_access(False)
             for ram_bank in self.ram:
                 ram_bank.bus_enabled = False

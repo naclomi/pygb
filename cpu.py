@@ -963,6 +963,8 @@ class CPU(object):
 
                             # Jump to handler!
                             self.PC.write(0x40 + 8*idx)
+
+                            # TODO: is this supposed to be 5 or 20??
                             return 5
                         else:
                             # TODO: figure out what this value should actually

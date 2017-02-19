@@ -33,7 +33,7 @@ class VIDEO(object):
             pygame.Color(0xFC, 0xFC, 0xFC, 0xFF),
             pygame.Color(0xBC, 0xBC, 0xBC, 0xFF),
             pygame.Color(0x74, 0x74, 0x74, 0xFF),
-            pygame.Color(0x00, 0x00, 0x00, 0xFF)
+            pygame.Color(0x00, 0x00, 0x00, 0xFF),
         ]
         self.window.fill(self.colors[3])
 
@@ -80,9 +80,7 @@ class VIDEO(object):
     
     def update_oam(self):
         size = self.vregs.sprite_size
-        for sprite_idx in xrange(len(self.oam_tiles)):
-            sprite = self.vram_oam.sprites[sprite_idx]
-
+        for sprite in self.vram_oam.sprites:
             if (sprite.rerender or
                 (size == 0 and self.vram_tile.tiles_changed[sprite.tile_idx]) or
                 (size == 1 and self.vram_tile.tiles_changed[sprite.tile_idx & 0xFE]) or
@@ -94,14 +92,14 @@ class VIDEO(object):
                     tile += self.vram_tile.tiles[(sprite.tile_idx & 0xFE) + 1]
 
                 palette = self.vregs.obp1 if sprite.palette == 1 else self.vregs.obp0
-                self.oam_tiles[sprite_idx] = self.render_bitmap(tile, palette)
+                self.oam_tiles[sprite.idx] = self.render_bitmap(tile, palette)
                 if sprite.h_flip or sprite.v_flip:
-                    self.oam_tiles[sprite_idx] = pygame.transform.flip(self.oam_tiles[sprite_idx], sprite.h_flip, sprite.v_flip)
+                    self.oam_tiles[sprite.idx] = pygame.transform.flip(self.oam_tiles[sprite.idx], sprite.h_flip, sprite.v_flip)
                 sprite.rerender = False
             elif sprite.palette == 0 and self.vregs.obp0_changed:
-                self.oam_tiles[sprite_idx].set_palette(map(lambda x: self.colors[x], self.vregs.obp0))
+                self.oam_tiles[sprite.idx].set_palette(map(lambda x: self.colors[x], self.vregs.obp0))
             elif sprite.palette == 1 and self.vregs.obp1_changed:
-                self.oam_tiles[sprite_idx].set_palette(map(lambda x: self.colors[x], self.vregs.obp1))
+                self.oam_tiles[sprite.idx].set_palette(map(lambda x: self.colors[x], self.vregs.obp1))
         self.vregs.obp0_changed = False
         self.vregs.obp1_changed = False
 
@@ -347,13 +345,8 @@ class VIDEO(object):
                 
                 # Reset STAT
                 self.vregs.mode = 0
-                self.vregs.coincidence_flag = 0
                 self.vregs.ly = 0
-                # TODO: not sure, do these get reset or not?
-                # self.vregs.h_blank_int = 0
-                # self.vregs.v_blank_int = 0
-                # self.vregs.oam_int = 0
-                # self.vregs.coincidence_int = 0
+                self.vregs.coincidence_flag = self.vregs.lyc == 0
 
                 # Force RAM ports open
                 self.vram_oam.bus_enabled = True
@@ -595,6 +588,8 @@ class VIDEO_MAP_RAM(bus.BUS_OBJECT):
     def __init__(self):
         super(VIDEO_MAP_RAM, self).__init__()
         self.map = [0]*32*32
+
+        # TODO: this is probably debug code? should probably remove it
         for x in range (32):
             self.map[x + x*32] = 1
         self.map[1] = 1
@@ -629,10 +624,8 @@ class SPRITE(object):
         elif addr == 1:
             return self.x
         elif addr == 2:
-            self.rerender = True
             return self.tile_idx
         elif addr == 3:
-            self.rerender = True
             val = 0
             val |= self.palette << 4
             val |= self.h_flip << 5
@@ -648,8 +641,10 @@ class SPRITE(object):
         elif addr == 1:
             self.x = value & 0xFF
         elif addr == 2:
+            self.rerender = True
             self.tile_idx = value & 0xFF
         elif addr == 3:
+            self.rerender = True
             self.palette = (value >> 4) & 0x01
             self.h_flip = (value >> 5) & 0x01
             self.v_flip = (value >> 6) & 0x01
