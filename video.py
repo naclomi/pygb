@@ -69,6 +69,10 @@ class VIDEO(object):
     def render_bitmap(self, tile, palette):
         bitmap = pygame.Surface((8*self.scale, len(tile) / 8 * self.scale), depth=8)
         bitmap.set_palette(map(lambda x: self.colors[x], palette))
+        # Color 0 is transparent on sprites. For tile maps, we'll also have
+        # it be transparent but paint the screen with this color right after
+        # clearing it to allow a semi-transparent effect for low-priority
+        # sprites to show through
         bitmap.set_colorkey(0)
         for pix_idx, pix in enumerate(tile):
             pix_x = 7 - (pix_idx % 8)
@@ -123,7 +127,7 @@ class VIDEO(object):
             if self.vregs.bg_enable or self.vregs.window_enable:
                 self.update_bg_tiles()
                 # TODO: is this correct if bg is disabled and window is not
-                # at origin
+                # at origin?
                 self.window.fill(self.colors[self.vregs.bgp[0]])
 
             scx = 256 - self.vregs.scx
@@ -132,24 +136,7 @@ class VIDEO(object):
             wy = 256 - self.vregs.wy
             data_select = self.vregs.map_data
 
-            # Draw low-priority sprites
-            if self.vregs.sprite_enable:
-                self.update_oam()
-
-                scan_sprites = []
-                for sprite in self.vram_oam.sprites:
-                    if sprite.priority == 0 and 0 < sprite.y <= 160:
-                        scan_sprites.append(sprite)
-                scan_sprites.sort(key=lambda spr: (-spr.x, -spr.idx))
-                for sprite in scan_sprites:
-                    bitmap = self.oam_tiles[sprite.idx]
-                    self.window.blit(bitmap, (
-                        (sprite.x - 8) * self.scale, 
-                        (sprite.y - 16) * self.scale
-                    ))
-
-            # Draw background and window, with color 0 replaced with
-            # transparency so we can see low-priority sprites as well
+            # Draw background
             if self.vregs.bg_enable:
                 if self.vregs.bg_map == 0:
                     tile_map = self.vram_map_0.map 
@@ -173,6 +160,23 @@ class VIDEO(object):
                             (y*8+scy%8)*self.scale
                         ))
 
+            # Draw low-priority sprites
+            if self.vregs.sprite_enable:
+                self.update_oam()
+
+                scan_sprites = []
+                for sprite in self.vram_oam.sprites:
+                    if sprite.priority == 0 and 0 < sprite.y <= 160:
+                        scan_sprites.append(sprite)
+                scan_sprites.sort(key=lambda spr: (-spr.x, -spr.idx))
+                for sprite in scan_sprites:
+                    bitmap = self.oam_tiles[sprite.idx]
+                    self.window.blit(bitmap, (
+                        (sprite.x - 8) * self.scale, 
+                        (sprite.y - 16) * self.scale
+                    ))
+
+            # Draw window
             if self.vregs.window_enable and wx <= 166 and wy <= 143 :
                 if self.vregs.window_map == 0:
                     tile_map = self.vram_map_0.map 
