@@ -126,8 +126,13 @@ class DEBUGGER(object):
             #print "frame %d" % self.system.video_driver.frame
             print "------------"
 
+    def update_system(self):
+        # In case the user loaded a state and the system got rebuilt
+        if self.system.cpu is not self.debug_locals["cpu"]:
+            self.debug_locals.update(self.system.__dict__)
 
     def start(self):
+        self.update_system()
         print "------------"
         print "CORE DUMP"
         print self.system.cpu.core_dump()

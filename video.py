@@ -27,8 +27,10 @@ class VIDEO(object):
 
         self.bus = bus
         self.scale = scale
+        self.width = 160
+        self.height = 144
 
-        self.window = pygame.display.set_mode((160*self.scale, 144*self.scale))
+        self.window = pygame.display.set_mode((self.width*self.scale, self.height*self.scale))
         self.colors = [
             pygame.Color(0xFC, 0xFC, 0xFC, 0xFF),
             pygame.Color(0xBC, 0xBC, 0xBC, 0xFF),
@@ -62,6 +64,36 @@ class VIDEO(object):
         self.enabled = False
         self.display_clock = 0.0
         self.dma_clock = 0.0
+        self.window_y = 0
+
+    def __getstate__(self):
+        pickled_ppu = self.__dict__.copy()
+        del pickled_ppu["window"]
+        del pickled_ppu["colors"]
+        del pickled_ppu["bg_tiles"]
+        del pickled_ppu["oam_tiles"]
+        return pickled_ppu
+
+    def __setstate__(self, pickled_ppu):
+        self.__dict__.update(pickled_ppu)
+
+        # TODO: decompose color palette here and in __init__
+        self.window = pygame.display.get_surface()
+        self.colors = [
+            pygame.Color(0xFC, 0xFC, 0xFC, 0xFF),
+            pygame.Color(0xBC, 0xBC, 0xBC, 0xFF),
+            pygame.Color(0x74, 0x74, 0x74, 0xFF),
+            pygame.Color(0x00, 0x00, 0x00, 0xFF),
+        ]
+        self.bg_tiles = [None] * self.vram_tile.N_tiles
+        self.oam_tiles = [None] * len(self.vram_oam.sprites)
+
+        for sprite in self.vram_oam.sprites:
+            sprite.rerender = True
+        for tile_idx in xrange(len(self.vram_tile.tiles_changed)):
+            self.vram_tile.tiles_changed[tile_idx] = True
+        self.update_bg_tiles()
+        self.update_oam()
 
     def dma_active(self):
         return self.dma_clock > 0
@@ -104,8 +136,6 @@ class VIDEO(object):
                 self.oam_tiles[sprite.idx].set_palette(map(lambda x: self.colors[x], self.vregs.obp0))
             elif sprite.palette == 1 and self.vregs.obp1_changed:
                 self.oam_tiles[sprite.idx].set_palette(map(lambda x: self.colors[x], self.vregs.obp1))
-        self.vregs.obp0_changed = False
-        self.vregs.obp1_changed = False
 
     def update_bg_tiles(self):
         for tile_idx in xrange(len(self.bg_tiles)):
@@ -116,24 +146,27 @@ class VIDEO(object):
                 )
             elif self.vregs.bgp_changed:
                 self.bg_tiles[tile_idx].set_palette(map(lambda x: self.colors[x], self.vregs.bgp))
-        self.vregs.bgp_changed = False
 
-    def draw(self):        
-        self.window.fill(self.colors[0])
+    def draw(self, scanline=0, window_y=0, surface=None):
+        if surface is None:
+            surface = self.window
+
+        if scanline == 0:
+            surface.set_clip(None)
+        else:
+            surface.set_clip([0, scanline*self.scale, self.width*self.scale, (self.height-scanline)*self.scale])
 
         if self.vregs.display_enable:
 
             # Fill with color 0 before drawing low-priority sprites
             if self.vregs.bg_enable or self.vregs.window_enable:
                 self.update_bg_tiles()
-                # TODO: is this correct if bg is disabled and window is not
-                # at origin?
-                self.window.fill(self.colors[self.vregs.bgp[0]])
+                surface.fill(self.colors[self.vregs.bgp[0]])
 
             scx = 256 - self.vregs.scx
             scy = 256 - self.vregs.scy
-            wx = 256 - self.vregs.wx
-            wy = 256 - self.vregs.wy
+            wx = self.vregs.wx
+            wy = self.vregs.wy
             data_select = self.vregs.map_data
 
             # Draw background
@@ -145,8 +178,8 @@ class VIDEO(object):
 
                 x = 0
                 y = 0
-                for x in range(-1,160/8):
-                    for y in range(-1,144/8):
+                for x in range(-1,self.width/8):
+                    for y in range(-1+(scanline/8),self.height/8):
                         map_x = (x - scx / 8) & 0x1F
                         map_y = (y - scy / 8) & 0x1F
                         map_idx = map_x + map_y * 32
@@ -155,7 +188,7 @@ class VIDEO(object):
                         else:
                             tile_idx = 0x80 + (((tile_map[map_idx]&0xFF)-128)&0xFF)
                         bitmap = self.bg_tiles[tile_idx]
-                        self.window.blit(bitmap, (
+                        surface.blit(bitmap, (
                             (x*8+scx%8)*self.scale, 
                             (y*8+scy%8)*self.scale
                         ))
@@ -166,12 +199,12 @@ class VIDEO(object):
 
                 scan_sprites = []
                 for sprite in self.vram_oam.sprites:
-                    if sprite.priority == 0 and 0 < sprite.y <= 160:
+                    if sprite.priority == 0 and scanline <= sprite.y <= self.height:
                         scan_sprites.append(sprite)
                 scan_sprites.sort(key=lambda spr: (-spr.x, -spr.idx))
                 for sprite in scan_sprites:
                     bitmap = self.oam_tiles[sprite.idx]
-                    self.window.blit(bitmap, (
+                    surface.blit(bitmap, (
                         (sprite.x - 8) * self.scale, 
                         (sprite.y - 16) * self.scale
                     ))
@@ -187,7 +220,12 @@ class VIDEO(object):
                 y = 0
                 data_select = self.vregs.map_data
 
-                # Hmmmmmmmm, wrt window:
+                pygame.draw.rect(surface, self.colors[self.vregs.bgp[0]],
+                    (wx*self.scale, (scanline+wy)*self.scale,
+                    self.width*self.scale, self.height*self.scale)
+                )
+
+                # TODO: Hmmmmmmmm, wrt window:
                 #  If the window is used and a scan line interrupt disables
                 # it (either by writing to LCDC or by setting WX > 166)
                 # and a scan line interrupt a little later on enables it
@@ -203,15 +241,15 @@ class VIDEO(object):
                 # (WX>166) ) but changes to WY are not dynamic and won't
                 # be noticed until the next screen redraw.
 
-                for x in range(-1,160/8):
-                    for y in range(-1,144/8):
+                for x in range(-1,self.width/8):
+                    for y in range(-1+(window_y/8),self.height/8):
                         map_idx = x + y * 32
                         if data_select:
                             tile_idx = tile_map[map_idx]
                         else:
                             tile_idx = 0x80 + (((tile_map[map_idx]&0xFF)-128)&0xFF)
                         bitmap = self.bg_tiles[tile_idx]
-                        self.window.blit(bitmap, (
+                        surface.blit(bitmap, (
                             (x*8+wx-7)*self.scale, 
                             (y*8+wy)*self.scale
                         ))
@@ -220,24 +258,40 @@ class VIDEO(object):
             if self.vregs.sprite_enable:
                 scan_sprites = []
                 for sprite in self.vram_oam.sprites:
-                    if sprite.priority == 1 and 0 < sprite.y <= 160:
+                    if sprite.priority == 1 and scanline <= sprite.y <= self.height:
                         scan_sprites.append(sprite)
                 scan_sprites.sort(key=lambda spr: (-spr.x, -spr.idx))
                 for sprite in scan_sprites:
                     bitmap = self.oam_tiles[sprite.idx]
-                    self.window.blit(bitmap, (
+                    surface.blit(bitmap, (
                         (sprite.x - 8) * self.scale, 
                         (sprite.y - 16) * self.scale
                     ))
 
-            for tile_idx in range(len(self.vram_tile.tiles_changed)):
-                self.vram_tile.tiles_changed[tile_idx] = False
-
         pygame.display.flip()
+
+    def ram_changed(self):
+        return (self.vregs.lcdc_changed or self.vram_tile.any_tile_changed or
+            self.vram_map_0.map_changed or self.vram_map_1.map_changed or
+            self.vram_oam.sprites_changed or self.vregs.bgp_changed or
+            self.vregs.obp0_changed or self.vregs.obp1_changed)
+
+    def clear_changed_flags(self):
+        self.vregs.lcdc_changed = False
+        self.vram_tile.any_tile_changed = False
+        self.vram_map_0.map_changed = False
+        self.vram_map_1.map_changed = False
+        self.vram_oam.sprites_changed = False
+        self.vregs.bgp_changed = False
+        self.vregs.obp0_changed = False
+        self.vregs.obp1_changed = False
+        for tile_idx in range(len(self.vram_tile.tiles_changed)):
+            self.vram_tile.tiles_changed[tile_idx] = False
 
     def advance(self, delta):
 
         # TODO: implement scanline redraw
+        # TODO: implement window state machine rules
 
         # Handle OAM DMA
         if self.dma_active():
@@ -265,9 +319,11 @@ class VIDEO(object):
                     self.draw()
                     self.frame += 1
                     self.display_clock -= self.T_refresh
+                    self.window_y = 0
+                    self.clear_changed_flags()
 
             # Emulate display state machine
-            if self.display_clock >= self.T_scanline * 144:
+            if self.display_clock >= self.T_scanline * self.height:
                 # V-Blank
                 if self.vregs.mode != 1:
                     self.vregs.mode = 1
@@ -320,12 +376,20 @@ class VIDEO(object):
                     self.vram_map_0.bus_enabled = True
                     self.vram_map_1.bus_enabled = True
 
+                    if self.ram_changed():
+                        self.draw(int(self.display_clock / self.T_scanline), self.window_y)
+                        self.clear_changed_flags()
+
+                    if self.vregs.window_enable:
+                        self.window_y += 1
+
                     if self.vregs.h_blank_int:
                         # Trigger an interrupt
                         # TODO: pull these magic numbers out somewhere
                         IF_state = self.bus.read(0xFF0F)
                         IF_state |= 0x2
                         self.bus.write(0xFF0F, IF_state)
+
 
             # Update LY and check if we should trigger the coincidence interrupt
             cur_ly = int(self.display_clock / self.T_scanline)
@@ -340,6 +404,7 @@ class VIDEO(object):
                     IF_state = self.bus.read(0xFF0F)
                     IF_state |= 0x2
                     self.bus.write(0xFF0F, IF_state)
+
         else:
             if self.enabled:
                 self.enabled = False
@@ -388,6 +453,7 @@ class VIDEO_REGS(bus.BUS_OBJECT):
         self.sprite_size = 0
         self.sprite_enable = 1
         self.bg_enable = 1
+        self.lcdc_changed = True
 
         # Palettes
         self.bgp = [3,2,1,0]
@@ -416,6 +482,7 @@ class VIDEO_REGS(bus.BUS_OBJECT):
         self.sprite_size = 0
         self.sprite_enable = 0
         self.bg_enable = 1
+        self.lcdc_changed = True
 
         self.scx = 0
         self.scy = 0
@@ -480,6 +547,7 @@ class VIDEO_REGS(bus.BUS_OBJECT):
 
     def bus_write(self, addr, value):
         if addr == 0: # FF40 - LCDC
+            self.lcdc_changed = True
             self.display_enable = ((value >> 7) & 0x1) != 0
             self.window_map = ((value >> 6) & 0x1) != 0
             self.window_enable = ((value >> 5) & 0x1) != 0
@@ -527,6 +595,7 @@ class VIDEO_TILE_RAM(bus.BUS_OBJECT):
         self.N_tiles = 384
         self.tiles = [[0]*(8*8) for _ in range(self.N_tiles)]
         self.tiles_changed = [True]*self.N_tiles
+        self.any_tile_changed = True
 
         # TODO: delete these some day:
         # self.tiles[0] = [
@@ -586,26 +655,21 @@ class VIDEO_TILE_RAM(bus.BUS_OBJECT):
             value = value >> 1
 
         self.tiles_changed[tile_idx] = True
+        self.any_tile_changed = True
 
 
 class VIDEO_MAP_RAM(bus.BUS_OBJECT):
     def __init__(self):
         super(VIDEO_MAP_RAM, self).__init__()
         self.map = [0]*32*32
-
-        # TODO: this is probably debug code? should probably remove it
-        for x in range (32):
-            self.map[x + x*32] = 1
-        self.map[1] = 1
-        self.map[2] = 1
-        self.map[-2] = 1
-        self.map[-3] = 1
+        self.map_changed = True
 
     def bus_read(self, addr):
         return self.map[addr]
 
     def bus_write(self, addr, value):
         self.map[addr] = value
+        self.map_changed = True
 
 
 class SPRITE(object):
@@ -661,21 +725,10 @@ class VIDEO_OAM(bus.BUS_OBJECT):
     def __init__(self):
         super(VIDEO_OAM, self).__init__()
         self.sprites = [SPRITE(x) for x in range(40)]
-
-        # TODO: delete these some day:
-        # self.sprites[3].x = 40
-        # self.sprites[3].y = 40
-        # self.sprites[3].tile_idx = 1
-        # self.sprites[3].v_flip = 1
-        # self.sprites[3].priority = 1        
-        # self.sprites[4].x = 50
-        # self.sprites[4].y = 40
-        # self.sprites[4].tile_idx = 1
-        # self.sprites[4].v_flip = 1
-        # self.sprites[4].palette = 1
-        # self.sprites[4].priority = 0
+        self.sprites_changed = True
 
     def dma(self, dma_base):
+        self.sprites_changed = True
         ptr = dma_base
         for sprite in self.sprites:
             sprite.write(0, self.bus.read(ptr, force=True))
@@ -688,4 +741,5 @@ class VIDEO_OAM(bus.BUS_OBJECT):
         return self.sprites[addr / 4].read(addr % 4)
 
     def bus_write(self, addr, value):
+        self.sprites_changed = True
         self.sprites[addr / 4].write(addr % 4, value)
