@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/pypy
 # TODO: rename everything leomulator
 
 # For the frontend
@@ -7,6 +7,7 @@ import pygame
 import pickle
 import time
 import traceback
+import argparse
 
 # For the system
 import debug as gb_debug
@@ -341,7 +342,7 @@ def main(system, debugger):
                 raise
         except Exception:
             traceback.print_exc()
-            if debug:
+            if debugger is not None:
                 debugger.start()
             else:
                 print "------------"
@@ -355,17 +356,24 @@ def main(system, debugger):
     return n_instr, n_cyc
 
 if __name__=="__main__":
-    if len(sys.argv) < 2:
-        print "Usage: %s [-v] [-d] [--paused] [--log LOGFILE] ROMFILE" % sys.argv[0]
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Pretend to be a boy who plays games')
+    parser.add_argument('romfile', metavar='ROMFILE', type=str,
+                        help='Gameboy ROM to load')
+    parser.add_argument('--debug', '-d', action='store_true',
+                        help='Enable debugging features (reduces emulation speed)')
+    parser.add_argument('--paused', action='store_true',
+                        help='Start emulation paused in the debugger')
+    parser.add_argument('--profile', action='store_true',
+                        help='Run emulator within cProfile')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Be verbose')
+    parser.add_argument('--log', metavar='LOGFILE', type=str,
+                        help='Log stdout to the specified file')
 
-    # TODO: use argparser
-    debug = "-d" in sys.argv or "--debug" in sys.argv
-    profile = "--profile" in sys.argv
-    verbose = "-v" in sys.argv
-    start_paused = "--paused" in sys.argv
-    if "--log" in sys.argv:
-        log_file = sys.argv[sys.argv.index("--log")+1]
+    args = parser.parse_args()
+
+    if args.log is not None:
+        log_file = args.log
         print "Logging to " + log_file
         logger = gb_debug.Tee(log_file, "w")
 
@@ -373,17 +381,17 @@ if __name__=="__main__":
     pygame.display.set_caption("pygb")
     pygame.key.set_repeat(10, 10)
 
-    with open(sys.argv[1], "rb") as f:
+    with open(args.romfile, "rb") as f:
         print "Building system"
         system = GAMEBOY(f)
-        if debug:
-            debugger = gb_debug.DEBUGGER(system, verbose=verbose)
-            if start_paused:
+        if args.debug:
+            debugger = gb_debug.DEBUGGER(system, verbose=args.verbose)
+            if args.paused:
                 system.debug_trigger = True
         else:
             debugger = None
 
-        if profile:
+        if args.profile:
             import cProfile
             cProfile.run('main(system, debugger)')
         else:
