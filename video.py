@@ -66,6 +66,9 @@ class VIDEO(object):
         self.dma_clock = 0.0
         self.window_y = 0
 
+    def __repr__(self):
+        return util.objdumper(self)
+
     def __getstate__(self):
         pickled_ppu = self.__dict__.copy()
         del pickled_ppu["window"]
@@ -147,7 +150,7 @@ class VIDEO(object):
             elif self.vregs.bgp_changed:
                 self.bg_tiles[tile_idx].set_palette(map(lambda x: self.colors[x], self.vregs.bgp))
 
-    def draw(self, scanline=0, window_y=0, surface=None):
+    def draw(self, scanline=0, window_y=0, surface=None, flip=True):
         if surface is None:
             surface = self.window
 
@@ -156,11 +159,13 @@ class VIDEO(object):
         else:
             surface.set_clip([0, scanline*self.scale, self.width*self.scale, (self.height-scanline)*self.scale])
 
+        if self.vram_tile.any_tile_changed:
+            self.update_bg_tiles()
+
         if self.vregs.display_enable:
 
             # Fill with color 0 before drawing low-priority sprites
             if self.vregs.bg_enable or self.vregs.window_enable:
-                self.update_bg_tiles()
                 surface.fill(self.colors[self.vregs.bgp[0]])
 
             scx = 256 - self.vregs.scx
@@ -268,7 +273,8 @@ class VIDEO(object):
                         (sprite.y - 16) * self.scale
                     ))
 
-        pygame.display.flip()
+        if flip:
+            pygame.display.flip()
 
     def ram_changed(self):
         return (self.vregs.lcdc_changed or self.vram_tile.any_tile_changed or
@@ -316,11 +322,12 @@ class VIDEO(object):
 
             # Wrap display clock if we've refreshed the screen
             if self.display_clock >= self.T_refresh:
-                    self.draw()
-                    self.frame += 1
-                    self.display_clock -= self.T_refresh
-                    self.window_y = 0
-                    self.clear_changed_flags()
+                pygame.display.flip()
+                self.draw(flip=False)
+                self.frame += 1
+                self.display_clock -= self.T_refresh
+                self.window_y = 0
+                self.clear_changed_flags()
 
             # Emulate display state machine
             if self.display_clock >= self.T_scanline * self.height:
@@ -377,7 +384,7 @@ class VIDEO(object):
                     self.vram_map_1.bus_enabled = True
 
                     if self.ram_changed():
-                        self.draw(int(self.display_clock / self.T_scanline), self.window_y)
+                        self.draw(int(self.display_clock / self.T_scanline), self.window_y, flip=False)
                         self.clear_changed_flags()
 
                     if self.vregs.window_enable:
@@ -473,6 +480,9 @@ class VIDEO_REGS(bus.BUS_OBJECT):
 
         self.reset()
 
+    def __repr__(self):
+        return util.objdumper(self)
+
     def reset(self):
         self.display_enable = 1
         self.window_map = 0
@@ -546,6 +556,7 @@ class VIDEO_REGS(bus.BUS_OBJECT):
             raise Exception("video driver doesn't know WHAT the fuck to do")
 
     def bus_write(self, addr, value):
+        # TODO: should lcdc_changed just be regs_changed?
         if addr == 0: # FF40 - LCDC
             self.lcdc_changed = True
             self.display_enable = ((value >> 7) & 0x1) != 0
@@ -557,13 +568,16 @@ class VIDEO_REGS(bus.BUS_OBJECT):
             self.sprite_enable = ((value >> 1) & 0x1) != 0
             self.bg_enable = ((value >> 0) & 0x1) != 0
         elif addr == 1: # FF41 - STAT
+            self.lcdc_changed = True
             self.h_blank_int = ((value >> 3) & 0x1) != 0
             self.v_blank_int = ((value >> 4) & 0x1) != 0
             self.oam_int = ((value >> 5) & 0x1) != 0
             self.coincidence_int = ((value >> 6) & 0x1) != 0
         elif addr == 2: # FF42 - SCY
+            self.lcdc_changed = True
             self.scy = value & 0xFF
         elif addr == 3: # FF43 - SCX
+            self.lcdc_changed = True
             self.scx = value & 0xFF
         elif addr == 4: # FF44 - LY
             pass
@@ -581,8 +595,10 @@ class VIDEO_REGS(bus.BUS_OBJECT):
             self.obp1_changed = True
             self.obp1 = map(lambda x: (value >> x) & 0x3, [0,2,4,6])
         elif addr == 10: # FF4A - WY
+            self.lcdc_changed = True
             self.wy = value & 0xFF
         elif addr == 11: # FF4B - WX
+            self.lcdc_changed = True
             self.wx = value & 0xFF
         else:
             raise Exception("video driver doesn't know WHAT the fuck to do")
@@ -597,32 +613,22 @@ class VIDEO_TILE_RAM(bus.BUS_OBJECT):
         self.tiles_changed = [True]*self.N_tiles
         self.any_tile_changed = True
 
-        # TODO: delete these some day:
-        # self.tiles[0] = [
-        #     0,0,0,0,0,0,0,0,
-        #     0,2,0,0,0,0,3,0,
-        #     0,0,0,0,0,0,0,0,
-        #     0,0,0,0,0,0,0,0,
-        #     0,0,0,0,0,0,0,0,
-        #     0,0,0,0,0,0,0,0,
-        #     0,1,0,0,0,0,0,0,
-        #     0,0,0,0,0,0,0,0,
-        # ]
-        # self.tiles[1] = [
-        #     0,0,1,1,1,0,0,0,
-        #     0,1,1,1,1,1,0,0,
-        #     1,1,2,1,2,1,1,0,
-        #     1,3,1,1,1,3,1,0,
-        #     1,3,1,3,1,3,1,0,
-        #     0,1,3,1,3,1,0,0,
-        #     0,0,1,1,1,0,0,0,
-        #     0,0,0,0,0,0,0,0,
-        # ]
-
     def ascii_art(self, tile_idx):
         tile = self.tiles[tile_idx]
         for x in range(8):
             print "".join(map(str, tile[x*8:(x+1)*8]))
+
+    def __repr__(self):
+        txt = []
+        if self.any_tile_changed:
+            txt.append("TILES CHANGED")
+        for tile_idx in range(self.N_tiles):
+            txt.append("---Tile %d%s--------" % (tile_idx, "[CHANGED]" if self.tiles_changed[tile_idx] else ""))
+            tile = self.tiles[tile_idx]
+            for x in range(8):
+                txt.append("".join(map(str, tile[x*8:(x+1)*8])))
+            txt.append("\n")
+        return "\n".join(txt)
 
     def bus_read(self, addr):
         value = 0
