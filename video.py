@@ -174,6 +174,22 @@ class VIDEO(object):
             wy = self.vregs.wy
             data_select = self.vregs.map_data
 
+            # Draw low-priority sprites
+            if self.vregs.sprite_enable:
+                self.update_oam()
+
+                scan_sprites = []
+                for sprite in self.vram_oam.sprites:
+                    if sprite.priority == 1 and scanline <= sprite.y <= self.height + 16:
+                        scan_sprites.append(sprite)
+                scan_sprites.sort(key=lambda spr: (-spr.x, -spr.idx))
+                for sprite in scan_sprites:
+                    bitmap = self.oam_tiles[sprite.idx]
+                    surface.blit(bitmap, (
+                        (sprite.x - 8) * self.scale, 
+                        (sprite.y - 16) * self.scale
+                    ))
+
             # Draw background
             if self.vregs.bg_enable:
                 if self.vregs.bg_map == 0:
@@ -197,22 +213,6 @@ class VIDEO(object):
                             (x*8+scx%8)*self.scale, 
                             (y*8+scy%8)*self.scale
                         ))
-
-            # Draw low-priority sprites
-            if self.vregs.sprite_enable:
-                self.update_oam()
-
-                scan_sprites = []
-                for sprite in self.vram_oam.sprites:
-                    if sprite.priority == 0 and scanline <= sprite.y <= self.height:
-                        scan_sprites.append(sprite)
-                scan_sprites.sort(key=lambda spr: (-spr.x, -spr.idx))
-                for sprite in scan_sprites:
-                    bitmap = self.oam_tiles[sprite.idx]
-                    surface.blit(bitmap, (
-                        (sprite.x - 8) * self.scale, 
-                        (sprite.y - 16) * self.scale
-                    ))
 
             # Draw window
             if self.vregs.window_enable and wx <= 166 and wy <= 143 :
@@ -248,6 +248,12 @@ class VIDEO(object):
 
                 for x in range(-1,self.width/8):
                     for y in range(-1+(window_y/8),self.height/8):
+                        # TODO: it seems we get rendering glitches without this
+                        #   check (in SMW2). Figure out the right way to
+                        #   bound this loop so that we don't need the check:
+                        if x < 0 or y < 0:
+                            continue
+
                         map_idx = x + y * 32
                         if data_select:
                             tile_idx = tile_map[map_idx]
@@ -263,7 +269,7 @@ class VIDEO(object):
             if self.vregs.sprite_enable:
                 scan_sprites = []
                 for sprite in self.vram_oam.sprites:
-                    if sprite.priority == 1 and scanline <= sprite.y <= self.height:
+                    if sprite.priority == 0 and scanline <= sprite.y <= self.height + 16:
                         scan_sprites.append(sprite)
                 scan_sprites.sort(key=lambda spr: (-spr.x, -spr.idx))
                 for sprite in scan_sprites:
@@ -691,6 +697,9 @@ class SPRITE(object):
         self.palette = 0
 
         self.rerender = True
+
+    def __repr__(self):
+        return util.objdumper(self)
 
     def read(self, addr):
         if addr == 0:
