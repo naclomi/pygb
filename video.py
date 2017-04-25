@@ -159,7 +159,7 @@ class VIDEO(object):
         else:
             surface.set_clip([0, scanline*self.scale, self.width*self.scale, (self.height-scanline)*self.scale])
 
-        if self.vram_tile.any_tile_changed:
+        if self.vram_tile.any_tile_changed or self.vregs.bgp_changed:
             self.update_bg_tiles()
 
         if self.vregs.display_enable:
@@ -226,7 +226,7 @@ class VIDEO(object):
                 data_select = self.vregs.map_data
 
                 pygame.draw.rect(surface, self.colors[self.vregs.bgp[0]],
-                    (wx*self.scale, (scanline+wy)*self.scale,
+                    (wx*self.scale, (wy)*self.scale,
                     self.width*self.scale, self.height*self.scale)
                 )
 
@@ -302,7 +302,6 @@ class VIDEO(object):
 
     def advance(self, delta):
 
-        # TODO: implement scanline redraw
         # TODO: implement window state machine rules
 
         # Handle OAM DMA
@@ -389,8 +388,11 @@ class VIDEO(object):
                     self.vram_map_0.bus_enabled = True
                     self.vram_map_1.bus_enabled = True
 
+                    # TODO: SMW2: window_y param is causing flashes to appear in status bar
+                    # TODO: SMW: window_y param is causing PAUSED text to not appear
                     if self.ram_changed():
-                        self.draw(int(self.display_clock / self.T_scanline), self.window_y, flip=False)
+                        # self.draw(int(self.display_clock / self.T_scanline), window_y, flip=False)
+                        self.draw(int(self.display_clock / self.T_scanline), 0, flip=False)
                         self.clear_changed_flags()
 
                     if self.vregs.window_enable:

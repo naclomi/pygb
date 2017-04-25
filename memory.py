@@ -178,6 +178,8 @@ class CARTRIDGE(object):
         self.bus = bus
         self.rom = ROM(rom_bin)
 
+        self.filename = rom_bin.name
+
         self.cartridge_type = self.rom.bus_read(0x147)
         self.rom_size = (1024*32) << self.rom.bus_read(0x148)
         self.ram_size = [0, 1024*2, 1024*8, 1024*32, 1024*128, 1024*64][self.rom.bus_read(0x149)]

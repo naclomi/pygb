@@ -245,13 +245,13 @@ class GAMEBOY(object):
 
         self.cpu = gb_cpu.CPU(self.bus)
 
-    def save_state(self):
+    def save_state(self, filename):
         # TODO: auto-file-name-generation
-        with open("game.pygbstate","wb") as f:
+        with open(filename,"wb") as f:
             pickle.dump(self.__dict__, f)
 
-    def load_state(self):
-        with open("game.pygbstate","rb") as f:
+    def load_state(self, filename):
+        with open(filename,"rb") as f:
             new_system = pickle.load(f)
         self.__dict__.update(new_system)         
 
@@ -294,9 +294,9 @@ class GAMEBOY(object):
                 if event.key == pygame.K_ESCAPE:
                     self.exit_trigger = True
                 elif event.key == pygame.K_F5:
-                    self.save_state()
+                    self.save_state(self.cart.filename+".pygb.sav")
                 elif event.key == pygame.K_F7:
-                    self.load_state()
+                    self.load_state(self.cart.filename+".pygb.sav")
                 elif event.key == pygame.K_PAUSE:
                     self.debug_trigger = True
                 elif event.key in key_bindings:
