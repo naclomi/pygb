@@ -127,7 +127,7 @@ class VIDEO(object):
                 if size == 0:
                     tile = self.vram_tile.tiles[sprite.tile_idx]
                 else:
-                    tile = self.vram_tile.tiles[sprite.tile_idx & 0xFE]
+                    tile = self.vram_tile.tiles[sprite.tile_idx & 0xFE][:]
                     tile += self.vram_tile.tiles[(sprite.tile_idx & 0xFE) + 1]
 
                 palette = self.vregs.obp1 if sprite.palette == 1 else self.vregs.obp0
