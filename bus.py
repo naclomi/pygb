@@ -2,12 +2,27 @@
 class BUS(object):
     def __init__(self):
         self.devices = []
+        # TODO: remove profiling code:
+        # self.reads = {}
+
+        # Hard-code access to these because they're
+        # read a LOT
+        #
+        # TODO: maybe should just redesign 
+        # the BUS to be entirely hardcoded?
+        self.ie_reg = None
+        self.if_reg = None
 
     def attach(self, device, addr_lo, addr_hi):
         if not isinstance(device, BUS_OBJECT):
             raise TypeError()
         if device.bus is not None:
             raise Exception("Bus object already attached")
+
+        if addr_lo == 0xffff:
+            self.ie_reg = device
+        if addr_lo == 0xff0f:
+            self.if_reg = device
 
         device.bus_addr_lo = addr_lo
         device.bus_addr_hi = addr_hi
@@ -17,8 +32,15 @@ class BUS(object):
         # TODO: ensure no overlap
 
     def read(self, addr, force=False):
+        if addr == 0xffff:
+            return self.ie_reg.bus_read(0)
+        if addr == 0xff0f:
+            return self.if_reg.bus_read(0)
+
         for device, addr_lo, addr_hi in self.devices:
             if addr_lo <= addr <= addr_hi:
+                # TODO: remove profiling code:
+                #self.reads[addr_lo] = self.reads.get(addr_lo, 0)+1
                 if device.bus_enabled or force:
                     return device.bus_read(addr - addr_lo)
                 else:

@@ -246,7 +246,6 @@ class GAMEBOY(object):
         self.cpu = gb_cpu.CPU(self.bus)
 
     def save_state(self, filename):
-        # TODO: auto-file-name-generation
         with open(filename,"wb") as f:
             pickle.dump(self.__dict__, f)
 
@@ -401,4 +400,7 @@ if __name__=="__main__":
             T_end = time.time()
             print "Executed %i instructions in %f seconds (%f simulated)" % (n_instr, T_end-T_start, n_cyc*system.cpu.T_cyc)
 
-
+        # TODO: remove profiling code:
+        # for addr, count in system.bus.reads.items():
+        #     if count > 1:
+        #         print hex(addr) + ": " + str(count)
