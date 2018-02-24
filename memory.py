@@ -130,7 +130,35 @@ class MBC1(MBC):
 
 class MBC2(MBC):
     def __init__(self, rom, ram):
-        raise Exception("%s is unimplemented" % type(self).__name__)
+        super(MBC2, self).__init__(rom, ram)
+        self.rom_bank = 1
+        self.ram_enable = 0
+        # TODO: do we need to force-create a 512b ram for this MBC?
+
+    def write(self, segment, addr, value):
+        if segment == 0:
+            if addr <= 0x1FFF:
+                # TODO: should disabling RAM reset its values? should it
+                # reset its bank?
+                if (addr & 0x0100) == 0:
+                    self.ram_enable = (value & 0x0F) == 0x0A
+            elif addr <= 0x3FFF:
+                self.rom_bank = value & 0x0F
+            else:
+                raise Exception("Unknown MBC operation")
+        else:
+            raise Exception("Unknown MBC operation")
+
+    def read(self, segment, addr):
+        if segment == 0:
+            return self.rom.bus_read(addr)
+        elif segment == 1:
+            return self.rom.bus_read(self.rom_bank*0x4000+addr)
+        elif segment == 2:
+            if self.ram_enable:
+                return self.ram.bus_read(addr)
+            else:
+                return 0xFF
 
 class MBC3(MBC):
     def __init__(self, rom, ram):
