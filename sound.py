@@ -67,7 +67,7 @@ class Note(Sound):
     # TODO: actually do this stuff
     def __init__(self, frequency, volume=.1):
         self.frequency = frequency
-        Sound.__init__(self, self.build_samples())
+        Sound.__init__(self, buffer=self.build_samples())
         self.set_volume(volume)
 
     def build_samples(self):
@@ -86,5 +86,5 @@ class Note(Sound):
 if __name__ == "__main__":
     pre_init(44100, -16, 1, 1024)
     pygame.init()
-    Note(440,.01).play(-1)
+    Note(440,.1).play(-1)
     sleep(5)

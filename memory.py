@@ -54,9 +54,10 @@ class MEM_SEGMENT(bus.BUS_OBJECT):
 
 
 class MBC(object):
-    def __init__(self, rom, ram):
-        self.rom = rom
-        self.ram = ram
+    def __init__(self, cart):
+        self.rom = cart.rom
+        self.ram = cart.ram
+        self.cart = cart
 
 
 class MBC_NONE(MBC):
@@ -77,8 +78,8 @@ class MBC_NONE(MBC):
             return self.ram.bus_read(addr)
 
 class MBC1(MBC):
-    def __init__(self, rom, ram):
-        super(MBC1, self).__init__(rom, ram)
+    def __init__(self, cart):
+        super(MBC1, self).__init__(cart)
         self.rom_bank = 1
         self.ram_bank = 0
         self.ram_enable = 0
@@ -129,8 +130,8 @@ class MBC1(MBC):
                 return 0xFF
 
 class MBC2(MBC):
-    def __init__(self, rom, ram):
-        super(MBC2, self).__init__(rom, ram)
+    def __init__(self, cart):
+        super(MBC2, self).__init__(cart)
         self.rom_bank = 1
         self.ram_enable = 0
         # TODO: do we need to force-create a 512b ram for this MBC?
@@ -160,44 +161,121 @@ class MBC2(MBC):
             else:
                 return 0xFF
 
+
 class MBC3(MBC):
-    def __init__(self, rom, ram):
-        raise Exception("%s is unimplemented" % type(self).__name__)
+    def __init__(self, cart):
+        super(MBC3, self).__init__(cart)
+        self.rom_bank = 1
+        self.ram_bank = 0
+        self.ram_rtc_enable = 0
+
+        self.rtc_seconds = 0
+        self.rtc_minutes = 0
+        self.rtc_hours = 0
+        self.rtc_days = 0
+        self.rtc_halt = 0
+        self.rtc_carry = 0
+        self.rtc_latch = 0
+        # TODO: how to persist RTC data across runs?
+
+    def write(self, segment, addr, value):
+        if segment == 0:
+            if addr <= 0x1FFF:
+                # TODO: should disabling RAM reset its values? should it
+                # reset its bank?
+                self.ram_rtc_enable = (value & 0x0F) == 0x0A
+            elif addr <= 0x3FFF:
+                value = value & 0x7F
+                if value == 0:
+                    value += 1
+                self.rom_bank = value
+            else:
+                raise Exception("Unknown MBC operation")
+        elif segment == 1:
+            if addr <= 0x1FFF:
+                if value < 0x08:
+                    self.ram_bank = value & 0x03
+                else:
+                    # TOOD: this is where RTC things go
+                    raise Exception("Unknown MBC operation")
+            elif addr <= 0x3FFF:
+                old_latch = self.rtc_latch
+                self.rtc_latch = value & 0x1
+                if old_latch == 0 and self.rtc_latch == 1:
+                    # TODO: latch time values
+                    # TODO: is this just a trigger, or is it
+                    # actually a latch? (like, is there any time
+                    # that data flows freely from clock to regs?)
+                    # also, how does this play with halt bit?
+                    pass
+            else:
+                raise Exception("Unknown MBC operation")
+        elif segment == 2:
+            if self.ram_rtc_enable:
+                self.ram.bus_write(self.ram_bank*0x2000+addr, value)
+
+    def read(self, segment, addr):
+        if segment == 0:
+            return self.rom.bus_read(addr)
+        elif segment == 1:
+            return self.rom.bus_read(self.rom_bank*0x4000+addr)
+        elif segment == 2:
+            if self.ram_rtc_enable:
+                if self.ram_bank < 0x08:
+                    return self.ram.bus_read(self.ram_bank*0x2000+addr)
+                elif self.cart.timer_present:
+                    if self.ram_bank == 0x08:
+                        return self.rtc_seconds
+                    elif self.ram_bank == 0x09:
+                        return self.rtc_minutes
+                    elif self.ram_bank == 0x0A:
+                        return self.rtc_hours
+                    elif self.ram_bank == 0x0B:
+                        return 0xFF & self.rtc_days
+                    elif self.ram_bank == 0x0C:
+                        return (((self.rtc_days & 0x100)!=0) |
+                                self.rtc_halt << 6 |
+                                self.rtc_carry << 7)
+                else:
+                    return 0xFF
+            else:
+                return 0xFF
+
 
 class MBC4(MBC):
-    def __init__(self, rom, ram):
+    def __init__(self, cart):
         raise Exception("%s is unimplemented" % type(self).__name__)
 
 class MBC5(MBC):
-    def __init__(self, rom, ram):
+    def __init__(self, cart):
         raise Exception("%s is unimplemented" % type(self).__name__)
 
 class MBC6(MBC):
-    def __init__(self, rom, ram):
+    def __init__(self, cart):
         raise Exception("%s is unimplemented" % type(self).__name__)
 
 class MBC7(MBC):
-    def __init__(self, rom, ram):
+    def __init__(self, cart):
         raise Exception("%s is unimplemented" % type(self).__name__)
 
 class MMM01(MBC):
-    def __init__(self, rom, ram):
+    def __init__(self, cart):
         raise Exception("%s is unimplemented" % type(self).__name__)
 
 class CAMERA(MBC):
-    def __init__(self, rom, ram):
+    def __init__(self, cart):
         raise Exception("%s is unimplemented" % type(self).__name__)
 
 class TAMA5(MBC):
-    def __init__(self, rom, ram):
+    def __init__(self, cart):
         raise Exception("%s is unimplemented" % type(self).__name__)
 
 class HuC3(MBC):
-    def __init__(self, rom, ram):
+    def __init__(self, cart):
         raise Exception("%s is unimplemented" % type(self).__name__)
 
 class HuC1(MBC):
-    def __init__(self, rom, ram):
+    def __init__(self, cart):
         raise Exception("%s is unimplemented" % type(self).__name__)
 
 
@@ -291,9 +369,8 @@ class CARTRIDGE(object):
         }
 
         self.ram = RAM(self.ram_size if self.ram_present else 0)
-        self.mbc = self.mbc_type(self.rom, self.ram)
-        # TODO: move the accessory flags (timer, rumble, accel) into mbc
-        # implementations somehow
+        self.mbc = self.mbc_type(self)
+
         # TODO: implement battery saves :) !!
 
         self.rom_0 = MEM_SEGMENT(0, self.mbc)
