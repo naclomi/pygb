@@ -132,7 +132,7 @@ class SERIAL(gb_bus.BUS_OBJECT):
         if addr == 0: # SB
             # TODO: this print is useful for blargg's tests, but parameterize
             # it so it doesn't barf out on other roms:
-            print chr(value),
+            print(chr(value)+"\n")
             self.data = value & 0xFF
         elif addr == 1: # SC
             self.control = value & 0xFF
@@ -344,10 +344,10 @@ def main(system, debugger):
             if debugger is not None:
                 debugger.start()
             else:
-                print "------------"
-                print "CORE DUMP"
-                print system.cpu.core_dump()
-                print "------------"
+                print("------------")
+                print("CORE DUMP")
+                print(system.cpu.core_dump())
+                print("------------")
             running = False
 
         n_instr += 1
@@ -373,7 +373,7 @@ if __name__=="__main__":
 
     if args.log is not None:
         log_file = args.log
-        print "Logging to " + log_file
+        print("Logging to " + log_file)
         logger = gb_debug.Tee(log_file, "w")
 
     pygame.init()
@@ -381,7 +381,7 @@ if __name__=="__main__":
     pygame.key.set_repeat(10, 10)
 
     with open(args.romfile, "rb") as f:
-        print "Building system"
+        print("Building system")
         system = GAMEBOY(f)
         if args.debug:
             debugger = gb_debug.DEBUGGER(system, verbose=args.verbose)
@@ -394,11 +394,11 @@ if __name__=="__main__":
             import cProfile
             cProfile.run('main(system, debugger)')
         else:
-            print "Starting execution"
+            print("Starting execution")
             T_start = time.time()
             n_instr, n_cyc = main(system, debugger)
             T_end = time.time()
-            print "Executed %i instructions in %f seconds (%f simulated)" % (n_instr, T_end-T_start, n_cyc*system.cpu.T_cyc)
+            print("Executed %i instructions in %f seconds (%f simulated)" % (n_instr, T_end-T_start, n_cyc*system.cpu.T_cyc))
 
         # TODO: remove profiling code:
         # for addr, count in system.bus.reads.items():

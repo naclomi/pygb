@@ -307,7 +307,7 @@ class VIDEO(object):
         # Handle OAM DMA
         if self.dma_active():
             # TODO: good for debugging, but delete eventually:
-            # print "dma clock", util.time_str(self.dma_clock)
+            # print("dma clock", util.time_str(self.dma_clock))
             self.dma_clock -= delta
             if self.dma_clock <= 0:
                 self.dma_clock = 0
@@ -315,7 +315,7 @@ class VIDEO(object):
         else:
             if self.vregs.dma_base is not None:
                 # TODO: good for debugging, but delete eventually:
-                # print "dma clock", util.time_str(self.dma_clock)
+                # print("dma clock", util.time_str(self.dma_clock))
                 self.dma_clock = self.T_dma - delta
                 self.vram_oam.dma(self.vregs.dma_base)
 
@@ -624,7 +624,7 @@ class VIDEO_TILE_RAM(bus.BUS_OBJECT):
     def ascii_art(self, tile_idx):
         tile = self.tiles[tile_idx]
         for x in range(8):
-            print "".join(map(str, tile[x*8:(x+1)*8]))
+            print("".join(map(str, tile[x*8:(x+1)*8])))
 
     def __repr__(self):
         txt = []

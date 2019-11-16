@@ -64,7 +64,7 @@ class DEBUGGER(object):
         def new(trigger):
             name = "B%d" % len(self.breakpoints)
             self.breakpoints[name] = trigger
-            print "Added breakpoint " + name
+            print("Added breakpoint " + name)
 
         def step():
             self.system.debug_trigger = True
@@ -113,18 +113,18 @@ class DEBUGGER(object):
                 if breakpoint():
                     triggered.append(break_name)
             except:
-                print "WARNING: Breakpoint %s failed with exception:" % break_name
+                print("WARNING: Breakpoint %s failed with exception:" % break_name)
                 traceback.print_exc()
                 triggered.append("%s (EXCEPTION)" % break_name)
         if len(triggered) > 0:
-            print "BREAKPOINTS TRIGGERED: " + ", ".join(triggered)
+            print("BREAKPOINTS TRIGGERED: " + ", ".join(triggered))
             self.start()
         elif self.verbose:
             # TODO: core dump is showing 'next pc' and 'current regs'
-            print self.system.cpu.core_dump()
+            print(self.system.cpu.core_dump())
             # TODO: reenable:
             #print "frame %d" % self.system.video_driver.frame
-            print "------------"
+            print("------------")
 
     def update_system(self):
         # In case the user loaded a state and the system got rebuilt
@@ -133,10 +133,10 @@ class DEBUGGER(object):
 
     def start(self):
         self.update_system()
-        print "------------"
-        print "CORE DUMP"
-        print self.system.cpu.core_dump()
-        print "------------"
+        print("------------")
+        print("CORE DUMP")
+        print(self.system.cpu.core_dump())
+        print("------------")
         try:
             code.interact(local=self.debug_locals)
         except SystemExit as e:

@@ -45,7 +45,7 @@ class BUS(object):
                     return device.bus_read(addr - addr_lo)
                 else:
                     return 0xFF
-        print "WARNING: Read from HiZ address 0x%04lX" % addr
+        print("WARNING: Read from HiZ address 0x%04lX" % addr)
         return 0xFF
 
     def write(self, addr, value, force=False):
@@ -54,7 +54,7 @@ class BUS(object):
                 if device.bus_enabled or force:
                     device.bus_write(addr - addr_lo, value)
                 return
-        print "WARNING: Write to HiZ address 0x%04lX" % addr
+        print("WARNING: Write to HiZ address 0x%04lX" % addr)
 
     def read_16(self, addr):
         return self.read(addr) | (self.read(addr+1) << 8)

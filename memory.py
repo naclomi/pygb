@@ -19,7 +19,7 @@ class ROM(bus.BUS_OBJECT):
         return self.rom_bytes[addr]
 
     def bus_write(self, addr, value):
-        print "WARNING: Write to ROM address 0x%04X=%02X" % (addr, value)
+        print("WARNING: Write to ROM address 0x%04X=%02X" % (addr, value))
 
 class RAM(bus.BUS_OBJECT):
     def __init__(self, size=2**16):
@@ -30,14 +30,14 @@ class RAM(bus.BUS_OBJECT):
         if addr < len(self.ram_bytes):
             return self.ram_bytes[addr]
         else:
-            print "WARNING: Read from out-of-bounds RAM address %04X" % (addr)
+            print("WARNING: Read from out-of-bounds RAM address %04X" % (addr))
             return 0xFF
 
     def bus_write(self, addr, value):
         if addr < len(self.ram_bytes):
             self.ram_bytes[addr] = value
         else:
-            print "WARNING: Write to out-of-bounds RAM address %04X=%02X" % (addr, value)
+            print("WARNING: Write to out-of-bounds RAM address %04X=%02X" % (addr, value))
 
 
 class MEM_SEGMENT(bus.BUS_OBJECT):
