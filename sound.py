@@ -65,7 +65,7 @@ class SOUND(object):
 
     # TODO: reset()
 
-class Note(Sound):
+class NoteSound(Sound):
     # TODO: actually do this stuff
     def __init__(self, frequency, volume=.1):
         self.frequency = frequency
@@ -170,12 +170,44 @@ def wave_data(freq, n_seconds, data_buffer):
 
 ############################################################
 
+class SquareNote(object):
+    def __init__(self, sample_rate, stereo = True):
+        self.freq = 0
+        self.duty = 0.5
+        self.sample_rate = sample_rate
+        self.n_channels = {True: 2, False: 1}[stereo]
+
+        self._last_pos = 0
+        self._data_buffer = array("f")
+
+    def gen_samples(self, n_words):
+        if len(self._data_buffer) < n_words:
+            self._data_buffer.extend([0]*n_words)
+        if self.freq > 0:
+            period = self.sample_rate // self.freq
+            n_samples = n_words // self.n_channels 
+
+            # TODO: profile if this is faster than a normal python array
+            for time in range(n_samples):
+                if ((time+self._last_pos) % period) < period * self.duty:
+                    self._data_buffer[time*2] = 1 # L
+                    self._data_buffer[time*2+1] = 1 # R
+                else:
+                    self._data_buffer[time*2] = 0 # L
+                    self._data_buffer[time*2+1] = 0 # R
+
+            self._last_pos += n_samples
+            self._last_pos %= period
+
+            return self._data_buffer[:n_words]
+        else:
+            return None
+
 class GameboyMixerStream(object):
     def __init__(self, sample_rate = 44100, stereo = True, buffer_seconds = 1):
         self.n_channels = {True: 2, False: 1}[stereo]
         self.sample_rate = sample_rate
         self.sample_bytes = 2
-        self.buffer_seconds = buffer_seconds
 
         riff_buffer = io.BytesIO()
 
@@ -185,7 +217,7 @@ class GameboyMixerStream(object):
         w.setframerate(self.sample_rate)
         sentinel_value = b"\xDA\x7A"
         # TODO: find some way to not have to allocate ALL of this memory:
-        w.writeframes(sentinel_value * int(self.sample_bytes * self.sample_rate * self.buffer_seconds / len(sentinel_value)))
+        w.writeframes(sentinel_value * int(self.sample_bytes * self.sample_rate * buffer_seconds / len(sentinel_value)))
         w.close()
 
         tmp_riff_file = riff_buffer.getvalue()
@@ -193,29 +225,37 @@ class GameboyMixerStream(object):
         self.riff_header = tmp_riff_file[:riff_data_offset]
         riff_buffer.close()
 
-        self.read_buffer = array("h")
+        self._data_buffer = array("h")
 
         self.file_pos = 0
         self.max_file_pos = len(tmp_riff_file)
 
-        self._tmp_gen_freq = 0
-        self._tmp_last_pos = 0
-
-    def _tmp_set_freq(self, f):
-        self._tmp_gen_freq = f
+        self.square_a = SquareNote(sample_rate, stereo)
+        self.square_b = SquareNote(sample_rate, stereo)
+        # self._tmp_gen_freq = 0
+        # self._tmp_last_pos = 0
+        # self._tmp_duty = {0:.125, 1:.25, 2:.5, 3:.75}[2]
 
     def fill_data(self, n_words):
-        period = self.sample_rate // self._tmp_gen_freq
-        n_samples = n_words // self.n_channels 
-        amplitude = ((2 ** (self.read_buffer.itemsize*8)) // 2) - 1
-        for time in range(n_samples):
-            if ((time+self._tmp_last_pos) % period) < period / 2:
-                self.read_buffer[time] = amplitude
-            else:
-                self.read_buffer[time] = -amplitude
+        if len(self._data_buffer) < n_words:
+            self._data_buffer.extend([0]*n_words)
 
-        self._tmp_last_pos += n_samples
-        self._tmp_last_pos %= period
+        sounds = [
+            self.square_a.gen_samples(n_words),
+            self.square_b.gen_samples(n_words)
+        ]
+
+        max_value_unsigned = (2 ** (self._data_buffer.itemsize*8) - 1)
+        max_value_signed = max_value_unsigned // 2
+
+        for idx in range(n_words):
+            mix_normalized = 0
+            for sound in sounds:
+                if sound is not None:
+                    mix_normalized = mix_normalized + sound[idx] - mix_normalized*sound[idx]
+            mix_signed = int(mix_normalized * max_value_unsigned - max_value_signed - 1)
+            # print(mix_signed)
+            self._data_buffer[idx] = mix_signed
 
     def tell(self):
         # print("tell",self.file_pos)
@@ -224,8 +264,6 @@ class GameboyMixerStream(object):
     def read(self, size=None):
         if size is None:
             raise ValueError("Mixer stream does not support unbounded reads")
-        if len(self.read_buffer) < size:
-            self.read_buffer.extend([0]*size)
         # print ("read ", self.file_pos, size)
         output_bytes = ""
         if self.file_pos < len(self.riff_header):
@@ -234,14 +272,14 @@ class GameboyMixerStream(object):
                 output_bytes = self.riff_header[self.file_pos:self.file_pos+size]
             else:
                 # print("bleed")
-                read_size_words = (size-len(self.riff_header)) // self.read_buffer.itemsize
+                read_size_words = (size-len(self.riff_header)) // self._data_buffer.itemsize
                 self.fill_data(read_size_words)
-                output_bytes = self.riff_header[self.file_pos:] + self.read_buffer[:read_size_words].tostring()
+                output_bytes = self.riff_header[self.file_pos:] + self._data_buffer[:read_size_words].tostring()
         else:
             # print("data")
-            read_size_words = size // self.read_buffer.itemsize
+            read_size_words = size // self._data_buffer.itemsize
             self.fill_data(read_size_words)
-            output_bytes = self.read_buffer[:read_size_words].tostring()
+            output_bytes = self._data_buffer[:read_size_words].tostring()
 
         self.file_pos += size
         return output_bytes
@@ -265,24 +303,28 @@ class GameboyMixerStream(object):
 if __name__ == "__main__":
     pre_init(44100, -16, 1, 1024)
     pygame.init()
-    # Note(440,.001).play(-1)
+    # NoteSound(440,.001).play(-1)
 
-    pcm_stream = GameboyMixerStream(sample_rate = get_init()[0], stereo = False)
+    pcm_stream = GameboyMixerStream(sample_rate = get_init()[0])
     
     # wave_data(440, pcm_stream.buffer_seconds, pcm_stream.sample_buffer())
-    pcm_stream._tmp_set_freq(440)
+    pcm_stream.square_a.freq=440
+    pcm_stream.square_b.freq=445
 
     pygame.mixer.music.set_volume(0.05)
     pcm_stream.connect()
     chirp = 0
     for _ in range(10):
-        sleep(.08)
+        sleep(.1)
         # wave_data(640-chirp, pcm_stream.buffer_seconds, pcm_stream.sample_buffer())
-        pcm_stream._tmp_set_freq(640-chirp)
+        pcm_stream.square_a.freq=640-chirp
+        pcm_stream.square_b.freq=645-chirp
+
         chirp += 5
-        sleep(.08)
+        sleep(.1)
         # wave_data(440-chirp, pcm_stream.buffer_seconds, pcm_stream.sample_buffer())
-        pcm_stream._tmp_set_freq(440-chirp)
+        pcm_stream.square_a.freq=440-chirp
+        pcm_stream.square_b.freq=445-chirp
         chirp += 5
     sleep(.2)
     # sleep(5)
