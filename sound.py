@@ -64,6 +64,8 @@ class SOUND(object):
             self.bus.attach(cpu.REG(reg[1], 8, init=reg[2]), reg[0], reg[0])    
 
     # TODO: reset()
+    # TODO: duty cycle lookup table:
+    #   duty = {0:.125, 1:.25, 2:.5, 3:.75}[reg]
 
 class NoteSound(Sound):
     # TODO: actually do this stuff
@@ -174,27 +176,128 @@ class SquareNote(object):
     def __init__(self, sample_rate, stereo = True):
         self.freq = 0
         self.duty = 0.5
+        self.duration_in_samples = None
         self.sample_rate = sample_rate
         self.n_channels = {True: 2, False: 1}[stereo]
+
+        # Length control -
+        # Either an int representing the number of samples left in the 
+        # note, or None representing an indefinite note
+        self._length_counter = None
+
+        # Volume envelope -
+        # When envelope period is non-zero, the envelope is enabled:
+        # Every period samples, increase or decrease the envelope value
+        # by delta (either 1/steps or -1/steps) and saturate at 0 or 1.
+        # Then multiply the final sound sample by the envelope value.
+        self._volume_envelope_period = 0
+        self._volume_envelope_counter = 0
+        self._volume_envelope_steps = 15
+        self._volume_envelope_delta = 0
+        self._volume_envelope_value = 0
+
+        # Frequency sweep - 
+        # If sweep_period is non-zero, every period samples the
+        # new note frequency f' is recalculated from the old frequency
+        # f as such:
+        # f' = f + coef*f
+        self._freq_sweep_period = 0
+        self._freq_sweep_coef = 0
+        self._freq_sweep_counter = 0
+        self._freq_sweep_effective = 0
 
         self._last_pos = 0
         self._data_buffer = array("f")
 
+    def set_freq_sweep(self, coef, period_seconds):
+        self._freq_sweep_coef = coef
+        self._freq_sweep_period = int(self.sample_rate * period_seconds)
+        self._freq_sweep_counter = self._freq_sweep_period
+        self._freq_sweep_effective = self.freq
+
+    def set_duration(self, seconds):
+        if seconds is None:
+            self._length_counter = None
+        else:
+            self._length_counter = int(self.sample_rate * seconds)
+
+    def set_volume_envelope(self, initial_volume, increasing, period_seconds):
+        self._volume_envelope_value = initial_volume
+        self._volume_envelope_delta = 1.0/self._volume_envelope_steps
+        if not increasing:
+            self._volume_envelope_delta *= -1
+        self._volume_envelope_period = int(self.sample_rate * period_seconds)
+        self._volume_envelope_counter = self._volume_envelope_period
+
     def gen_samples(self, n_words):
         if len(self._data_buffer) < n_words:
             self._data_buffer.extend([0]*n_words)
+
+
         if self.freq > 0:
-            period = self.sample_rate // self.freq
             n_samples = n_words // self.n_channels 
+
+            if self._freq_sweep_period > 0:
+                # TODO: slightly inaccurate, this should run in the main
+                # generation loop
+                if self._freq_sweep_counter <= 0:
+                    self._freq_sweep_counter = self._freq_sweep_period
+                    self._freq_sweep_effective += self._freq_sweep_coef * self._freq_sweep_effective
+                else:
+                    self._freq_sweep_counter -= n_samples
+
+
+                # TODO: this needs to be written back into the gameboy
+                # registers somehow, and it must clobber any changes
+                # since the sweep was triggered
+                effective_freq = self._freq_sweep_effective
+            else:
+                effective_freq = self.freq
+
+            if effective_freq > 2047:
+                return None
+
+            period = self.sample_rate // effective_freq
+
+            if self._length_counter is not None:
+                if self._length_counter <= 0:
+                    return None
+                elif self._length_counter <= n_samples:
+                    # Zero out the sound after the tone gets clipped
+                    for time in range(self._length_counter, n_samples):
+                        self._data_buffer[time*2] = 0 # L
+                        self._data_buffer[time*2+1] = 0 # R
+                    # Readjust the requested number of wave samples
+                    # to stop at the clipping time
+                    n_samples = self._length_counter
+                    self._length_counter = 0
+                else:
+                    self._length_counter -= n_samples
+
+            if self._volume_envelope_period > 0:
+                # TODO: slightly inaccurate, this should run in the main
+                # generation loop
+                if self._volume_envelope_counter <= 0:
+                    self._volume_envelope_counter = self._volume_envelope_period
+                    self._volume_envelope_value += self._volume_envelope_delta
+                    self._volume_envelope_value = max(self._volume_envelope_value, 0)
+                    self._volume_envelope_value = min(self._volume_envelope_value, 1)
+                else:
+                    self._volume_envelope_counter -= n_samples
+                square_max = 0.5+(self._volume_envelope_value/2.0)
+                square_min = 0.5-(self._volume_envelope_value/2.0)
+            else:
+                square_max = 1
+                square_min = 0
 
             # TODO: profile if this is faster than a normal python array
             for time in range(n_samples):
                 if ((time+self._last_pos) % period) < period * self.duty:
-                    self._data_buffer[time*2] = 1 # L
-                    self._data_buffer[time*2+1] = 1 # R
+                    self._data_buffer[time*2] = square_max # L
+                    self._data_buffer[time*2+1] = square_max # R
                 else:
-                    self._data_buffer[time*2] = 0 # L
-                    self._data_buffer[time*2+1] = 0 # R
+                    self._data_buffer[time*2] = square_min # L
+                    self._data_buffer[time*2+1] = square_min # R
 
             self._last_pos += n_samples
             self._last_pos %= period
@@ -232,9 +335,6 @@ class GameboyMixerStream(object):
 
         self.square_a = SquareNote(sample_rate, stereo)
         self.square_b = SquareNote(sample_rate, stereo)
-        # self._tmp_gen_freq = 0
-        # self._tmp_last_pos = 0
-        # self._tmp_duty = {0:.125, 1:.25, 2:.5, 3:.75}[2]
 
     def fill_data(self, n_words):
         if len(self._data_buffer) < n_words:
@@ -300,33 +400,80 @@ class GameboyMixerStream(object):
         pygame.mixer.music.play(loops=-1)
 
 
+def flat_tone(driver):
+    driver.square_a.freq=440
+    sleep(2)
+
+def flat_chord(driver):
+    driver.square_a.freq=440
+    driver.square_b.freq=445
+    sleep(2)
+
+def duty_sweep(driver):
+    driver.square_a.freq=440
+    for x in range(100):
+        driver.square_a.duty = x/100.0
+        sleep(.1)
+
+def duration_train(driver):
+    driver.square_a.freq=440
+    for x in range(10):
+        driver.square_a.set_duration((x/10.0)*0.25)
+        sleep(.5)
+    driver.square_a.set_duration(None)
+    sleep(2.0)
+
+
+def siren(driver):
+    chirp = 0
+    for _ in range(10):
+        driver.square_a.freq=640-chirp
+        driver.square_b.freq=645-chirp
+        sleep(.1)
+
+        chirp += 5
+        driver.square_a.freq=440-chirp
+        driver.square_b.freq=445-chirp
+        sleep(.1)
+        chirp += 5
+    sleep(.2)
+
+def volume_envelope_test(driver):
+    params = [
+        (1.0, False, 1/64.0),
+        (0.0, True, 1/64.0),
+        (0.5, False, 1/64.0),
+        (0.5, True, 1/64.0),
+        (1.0, False, 7/64.0),
+        (0.0, True, 7/64.0),
+    ]
+    for idx, param_set in enumerate(params):
+        print(idx)
+        driver.square_a.freq=440
+        driver.square_a.set_volume_envelope(*param_set)
+        sleep(3)
+        driver.square_a.freq=0
+        sleep(.25)
+
+
+def freq_sweep_test(driver):
+    params = [
+        (1.0/(2**2), 4/128.0),
+    ]
+    for idx, param_set in enumerate(params):
+        print(idx)
+        driver.square_a.freq=440
+        driver.square_a.set_freq_sweep(*param_set)
+        sleep(1)
+        driver.square_a.freq=0
+        sleep(.25)
+
 if __name__ == "__main__":
     pre_init(44100, -16, 1, 1024)
     pygame.init()
-    # NoteSound(440,.001).play(-1)
 
     pcm_stream = GameboyMixerStream(sample_rate = get_init()[0])
-    
-    # wave_data(440, pcm_stream.buffer_seconds, pcm_stream.sample_buffer())
-    pcm_stream.square_a.freq=440
-    pcm_stream.square_b.freq=445
-
     pygame.mixer.music.set_volume(0.05)
     pcm_stream.connect()
-    chirp = 0
-    for _ in range(10):
-        sleep(.1)
-        # wave_data(640-chirp, pcm_stream.buffer_seconds, pcm_stream.sample_buffer())
-        pcm_stream.square_a.freq=640-chirp
-        pcm_stream.square_b.freq=645-chirp
 
-        chirp += 5
-        sleep(.1)
-        # wave_data(440-chirp, pcm_stream.buffer_seconds, pcm_stream.sample_buffer())
-        pcm_stream.square_a.freq=440-chirp
-        pcm_stream.square_b.freq=445-chirp
-        chirp += 5
-    sleep(.2)
-    # sleep(5)
-
-
+    freq_sweep_test(pcm_stream)
