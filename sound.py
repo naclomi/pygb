@@ -172,13 +172,12 @@ def wave_data(freq, n_seconds, data_buffer):
 
 ############################################################
 
-class SquareNote(object):
+class SynthChannel(object):
     def __init__(self, sample_rate, stereo = True):
-        self.freq = 0
-        self.duty = 0.5
-        self.duration_in_samples = None
         self.sample_rate = sample_rate
         self.n_channels = {True: 2, False: 1}[stereo]
+
+        self.enabled = False
 
         # Length control -
         # Either an int representing the number of samples left in the 
@@ -196,24 +195,7 @@ class SquareNote(object):
         self._volume_envelope_delta = 0
         self._volume_envelope_value = 0
 
-        # Frequency sweep - 
-        # If sweep_period is non-zero, every period samples the
-        # new note frequency f' is recalculated from the old frequency
-        # f as such:
-        # f' = f + coef*f
-        self._freq_sweep_period = 0
-        self._freq_sweep_coef = 0
-        self._freq_sweep_counter = 0
-        self._freq_sweep_effective = 0
-
-        self._last_pos = 0
         self._data_buffer = array("f")
-
-    def set_freq_sweep(self, coef, period_seconds):
-        self._freq_sweep_coef = coef
-        self._freq_sweep_period = int(self.sample_rate * period_seconds)
-        self._freq_sweep_counter = self._freq_sweep_period
-        self._freq_sweep_effective = self.freq
 
     def set_duration(self, seconds):
         if seconds is None:
@@ -229,35 +211,15 @@ class SquareNote(object):
         self._volume_envelope_period = int(self.sample_rate * period_seconds)
         self._volume_envelope_counter = self._volume_envelope_period
 
+    def channel_function(self, n_samples, min_sample, max_sample):
+        return False
+
     def gen_samples(self, n_words):
         if len(self._data_buffer) < n_words:
             self._data_buffer.extend([0]*n_words)
 
-
-        if self.freq > 0:
+        if self.enabled:
             n_samples = n_words // self.n_channels 
-
-            if self._freq_sweep_period > 0:
-                # TODO: slightly inaccurate, this should run in the main
-                # generation loop
-                if self._freq_sweep_counter <= 0:
-                    self._freq_sweep_counter = self._freq_sweep_period
-                    self._freq_sweep_effective += self._freq_sweep_coef * self._freq_sweep_effective
-                else:
-                    self._freq_sweep_counter -= n_samples
-
-
-                # TODO: this needs to be written back into the gameboy
-                # registers somehow, and it must clobber any changes
-                # since the sweep was triggered
-                effective_freq = self._freq_sweep_effective
-            else:
-                effective_freq = self.freq
-
-            if effective_freq > 2047:
-                return None
-
-            period = self.sample_rate // effective_freq
 
             if self._length_counter is not None:
                 if self._length_counter <= 0:
@@ -284,27 +246,168 @@ class SquareNote(object):
                     self._volume_envelope_value = min(self._volume_envelope_value, 1)
                 else:
                     self._volume_envelope_counter -= n_samples
-                square_max = 0.5+(self._volume_envelope_value/2.0)
-                square_min = 0.5-(self._volume_envelope_value/2.0)
+                max_sample = 0.5+(self._volume_envelope_value/2.0)
+                min_sample = 0.5-(self._volume_envelope_value/2.0)
             else:
-                square_max = 1
-                square_min = 0
+                max_sample = 1
+                min_sample = 0
 
-            # TODO: profile if this is faster than a normal python array
-            for time in range(n_samples):
-                if ((time+self._last_pos) % period) < period * self.duty:
-                    self._data_buffer[time*2] = square_max # L
-                    self._data_buffer[time*2+1] = square_max # R
-                else:
-                    self._data_buffer[time*2] = square_min # L
-                    self._data_buffer[time*2+1] = square_min # R
-
-            self._last_pos += n_samples
-            self._last_pos %= period
-
-            return self._data_buffer[:n_words]
+            if self.channel_function(n_samples, min_sample, max_sample):
+                return self._data_buffer[:n_words]
+            else:
+                return None
         else:
             return None
+
+class SquareChannel(SynthChannel):
+    def __init__(self, *args, **kwargs):
+        super(SquareChannel, self).__init__(*args, **kwargs)
+
+        self.freq = 0
+        self.duty = 0.5
+
+        self._last_pos = 0
+
+        # Frequency sweep - 
+        # If sweep_period is non-zero, every period samples the
+        # new note frequency f' is recalculated from the old frequency
+        # f as such:
+        # f' = f + coef*f
+        # TODO:
+        # "" Clearing the sweep negate mode bit in NR10 after at least one sweep
+        # calculation has been made using the negate mode since the last trigger
+        # causes the channel to be immediately disabled. This prevents you from
+        # having the sweep lower the frequency then raise the frequency without a
+        # trigger inbetween. ""
+        self._freq_sweep_period = 0
+        self._freq_sweep_coef = 0
+        self._freq_sweep_counter = 0
+        self._freq_sweep_effective = 0
+
+
+    def set_freq_sweep(self, coef, period_seconds):
+        self._freq_sweep_coef = coef
+        self._freq_sweep_period = int(self.sample_rate * period_seconds)
+        self._freq_sweep_counter = self._freq_sweep_period
+        self._freq_sweep_effective = self.freq
+
+
+    def channel_function(self, n_samples, min_sample, max_sample):
+        if self.freq <= 0:
+            return False
+
+        if self._freq_sweep_period > 0:
+            # TODO: slightly inaccurate, this should run in the main
+            # generation loop
+            if self._freq_sweep_counter <= 0:
+                self._freq_sweep_counter = self._freq_sweep_period
+                self._freq_sweep_effective += self._freq_sweep_coef * self._freq_sweep_effective
+            else:
+                self._freq_sweep_counter -= n_samples
+
+            # TODO: this needs to be written back into the gameboy
+            # registers somehow, and it must clobber any changes
+            # since the sweep was triggered
+            effective_freq = self._freq_sweep_effective
+        else:
+            effective_freq = self.freq
+
+        if effective_freq > 2047:
+            return False
+
+        period = self.sample_rate // effective_freq
+
+        # TODO: profile if this is faster than a normal python array
+        for time in range(n_samples):
+            if ((time+self._last_pos) % period) < period * self.duty:
+                self._data_buffer[time*2] = max_sample # L
+                self._data_buffer[time*2+1] = max_sample # R
+            else:
+                self._data_buffer[time*2] = min_sample # L
+                self._data_buffer[time*2+1] = min_sample # R
+
+        self._last_pos += n_samples
+        self._last_pos %= period
+
+        return True
+
+
+class NoiseChannel(SynthChannel):
+    def __init__(self, *args, **kwargs):
+        super(NoiseChannel, self).__init__(*args, **kwargs)
+        self.wide_mode = True 
+        
+        self._lfsr = 1
+        self._update_counter = 0
+        self._update_period_samples = 0
+
+    def reset_lfsr(self):
+        self._lfsr = 1
+
+    def channel_function(self, n_samples, min_sample, max_sample):
+        # The amplitude is randomly switched between high and low at the given frequency. A higher frequency will make the noise to appear 'softer'.
+        # When Bit 3 is set, the output will become more regular, and some frequencies will sound more like Tone than Noise.
+        #   Bit 7-4 - Shift Clock Frequency (s); max == 
+        #   Bit 3   - Counter Step/Width (0=15 bits, 1=7 bits)
+        #   Bit 2-0 - Dividing Ratio of Frequencies (r, )
+        # Frequency = 524288 Hz / (r * 2^(s+1)) ;For r=0 assume r=0.5 instead
+        #
+        # The linear feedback shift register (LFSR) generates a pseudo-random
+        # bit sequence. It has a 15-bit shift register with feedback. When
+        # clocked by the frequency timer, the low two bits (0 and 1) are XORed,
+        # all bits are shifted right by one, and the result of the XOR is put
+        # into the now-empty high bit. If width mode is 1 (NR43), the XOR result
+        # is ALSO put into bit 6 AFTER the shift, resulting in a 7-bit LFSR. The
+        # waveform output is bit 0 of the LFSR, INVERTED.
+        #
+        # When initialized, all shift registers are set to 1. On each clock
+        # pulse, bits are shifted from left to right (on the picture) s1 being
+        # the least significant bit and the output that is sent to the channel's
+        # envelope generator.
+        #
+        # From belogic:
+        # 000: f*2
+        # 001: f
+        # 010: f/2
+        # 011: f/3
+        # 100: f/4
+        # 101: f/5
+        # 110: f/6
+        # 111: f/7          Where f=4.194304 Mhz/8
+
+        # 0000: Q/2
+        # 0001: Q/2^2
+        # 0010: Q/2^3
+        # 0011: Q/2^4
+        # ....
+        # 1101: Q/2^14
+        # 1110: Not used
+        # 1111: Not used         Where Q is the clock divider's output
+        #
+        #
+        # TODO: seems like the wave can flip anywhere from 12 times/sample
+        #   to once every 9647 samples -- prepare for both contingencies
+
+        self._update_counter += n_samples
+        if self._update_counter > self._update_period_samples:
+            xor = bool(self.lfsr & 0x1) ^ bool(self.lfsr & 0x2)
+            self.lfsr = self.lfsr >> 1
+            self.lfsr |= xor << 15
+            if not self.wide_mode:
+                self.lfsr |= xor << 6
+            self._update_counter -= self._update_period_samples
+
+
+        for time in range(n_samples):
+            if ((time+self._last_pos) % period) < period * self.duty:
+                self._data_buffer[time*2] = max_sample # L
+                self._data_buffer[time*2+1] = max_sample # R
+            else:
+                self._data_buffer[time*2] = min_sample # L
+                self._data_buffer[time*2+1] = min_sample # R
+
+
+
 
 class GameboyMixerStream(object):
     def __init__(self, sample_rate = 44100, stereo = True, buffer_seconds = 1):
@@ -333,8 +436,9 @@ class GameboyMixerStream(object):
         self.file_pos = 0
         self.max_file_pos = len(tmp_riff_file)
 
-        self.square_a = SquareNote(sample_rate, stereo)
-        self.square_b = SquareNote(sample_rate, stereo)
+        self.square_a = SquareChannel(sample_rate, stereo)
+        self.square_b = SquareChannel(sample_rate, stereo)
+        # self.noise = NoiseChannel(sample_rate, stereo)
 
     def fill_data(self, n_words):
         if len(self._data_buffer) < n_words:
@@ -342,7 +446,8 @@ class GameboyMixerStream(object):
 
         sounds = [
             self.square_a.gen_samples(n_words),
-            self.square_b.gen_samples(n_words)
+            self.square_b.gen_samples(n_words),
+            # self.noise.gen_samples(n_words)
         ]
 
         max_value_unsigned = (2 ** (self._data_buffer.itemsize*8) - 1)
@@ -402,21 +507,27 @@ class GameboyMixerStream(object):
 
 def flat_tone(driver):
     driver.square_a.freq=440
+    driver.square_a.enabled = True
     sleep(2)
 
 def flat_chord(driver):
     driver.square_a.freq=440
+    driver.square_a.enabled = True
     driver.square_b.freq=445
+    driver.square_b.enabled = True
     sleep(2)
 
 def duty_sweep(driver):
     driver.square_a.freq=440
+    driver.square_a.enabled = True
     for x in range(100):
         driver.square_a.duty = x/100.0
+
         sleep(.1)
 
 def duration_train(driver):
     driver.square_a.freq=440
+    driver.square_a.enabled = True
     for x in range(10):
         driver.square_a.set_duration((x/10.0)*0.25)
         sleep(.5)
@@ -426,6 +537,8 @@ def duration_train(driver):
 
 def siren(driver):
     chirp = 0
+    driver.square_a.enabled = True
+    driver.square_b.enabled = True
     for _ in range(10):
         driver.square_a.freq=640-chirp
         driver.square_b.freq=645-chirp
@@ -447,6 +560,7 @@ def volume_envelope_test(driver):
         (1.0, False, 7/64.0),
         (0.0, True, 7/64.0),
     ]
+    driver.square_a.enabled = True
     for idx, param_set in enumerate(params):
         print(idx)
         driver.square_a.freq=440
@@ -460,6 +574,7 @@ def freq_sweep_test(driver):
     params = [
         (1.0/(2**2), 4/128.0),
     ]
+    driver.square_a.enabled = True
     for idx, param_set in enumerate(params):
         print(idx)
         driver.square_a.freq=440
@@ -467,6 +582,9 @@ def freq_sweep_test(driver):
         sleep(1)
         driver.square_a.freq=0
         sleep(.25)
+
+def noise_test(driver):
+    pass
 
 if __name__ == "__main__":
     pre_init(44100, -16, 1, 1024)
@@ -476,4 +594,4 @@ if __name__ == "__main__":
     pygame.mixer.music.set_volume(0.05)
     pcm_stream.connect()
 
-    freq_sweep_test(pcm_stream)
+    siren(pcm_stream)
