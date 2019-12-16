@@ -335,14 +335,21 @@ class SquareChannel(SynthChannel):
 class NoiseChannel(SynthChannel):
     def __init__(self, *args, **kwargs):
         super(NoiseChannel, self).__init__(*args, **kwargs)
-        self.wide_mode = True 
+        self._wide_mode = True 
         
-        self._lfsr = 1
+        self._lfsr = 0b1111111111111111
         self._update_counter = 0
         self._update_period_samples = 0
 
     def reset_lfsr(self):
-        self._lfsr = 1
+        self._lfsr = 0b1111111111111111
+
+    def set_params(self, r, s, wide):
+        self._wide_mode = wide
+        r = max(0.5, min(7, r))
+        s = max(0, min(13, s))
+        update_frequency = int(524288.0 / (r * 2**(s+1)))
+        self._update_period_samples = self.sample_rate / update_frequency
 
     def channel_function(self, n_samples, min_sample, max_sample):
         # The amplitude is randomly switched between high and low at the given frequency. A higher frequency will make the noise to appear 'softer'.
@@ -388,24 +395,40 @@ class NoiseChannel(SynthChannel):
         # TODO: seems like the wave can flip anywhere from 12 times/sample
         #   to once every 9647 samples -- prepare for both contingencies
 
-        self._update_counter += n_samples
-        if self._update_counter > self._update_period_samples:
-            xor = bool(self.lfsr & 0x1) ^ bool(self.lfsr & 0x2)
-            self.lfsr = self.lfsr >> 1
-            self.lfsr |= xor << 15
-            if not self.wide_mode:
-                self.lfsr |= xor << 6
-            self._update_counter -= self._update_period_samples
 
+        if self._update_period_samples == 0:
+            return False
 
-        for time in range(n_samples):
-            if ((time+self._last_pos) % period) < period * self.duty:
-                self._data_buffer[time*2] = max_sample # L
-                self._data_buffer[time*2+1] = max_sample # R
+        time = 0
+        while time < n_samples:
+            period_samples = min(
+                n_samples - time,
+                self._update_period_samples - self._update_counter
+            )
+
+            if (self._lfsr & 0x1) == True:
+                period_value = min_sample
             else:
-                self._data_buffer[time*2] = min_sample # L
-                self._data_buffer[time*2+1] = min_sample # R
+                period_value = max_sample
+           
+            for i in range(time, time + period_samples):
+                self._data_buffer[i*2] = period_value
+                self._data_buffer[i*2+1] = period_value
+            time += period_samples
+            self._update_counter += period_samples
 
+            # print(period_samples, self._update_counter)
+            if self._update_counter >= self._update_period_samples:
+                # print("------------------------------")
+                # print (bin(self._lfsr)[2:].rjust(16,"0"))
+                xor = bool(self._lfsr & 0x1) ^ bool(self._lfsr & 0x2)
+                self._lfsr = self._lfsr >> 1
+                self._lfsr |= xor << 14
+                if not self._wide_mode:
+                    self._lfsr |= xor << 6
+                self._update_counter -= self._update_period_samples
+
+        return True
 
 
 
@@ -438,7 +461,7 @@ class GameboyMixerStream(object):
 
         self.square_a = SquareChannel(sample_rate, stereo)
         self.square_b = SquareChannel(sample_rate, stereo)
-        # self.noise = NoiseChannel(sample_rate, stereo)
+        self.noise = NoiseChannel(sample_rate, stereo)
 
     def fill_data(self, n_words):
         if len(self._data_buffer) < n_words:
@@ -447,7 +470,7 @@ class GameboyMixerStream(object):
         sounds = [
             self.square_a.gen_samples(n_words),
             self.square_b.gen_samples(n_words),
-            # self.noise.gen_samples(n_words)
+            self.noise.gen_samples(n_words)
         ]
 
         max_value_unsigned = (2 ** (self._data_buffer.itemsize*8) - 1)
@@ -503,6 +526,9 @@ class GameboyMixerStream(object):
     def connect(self):
         pygame.mixer.music.load(self)
         pygame.mixer.music.play(loops=-1)
+
+    def disconnect(self):
+        pygame.mixer.music.stop()
 
 
 def flat_tone(driver):
@@ -584,7 +610,10 @@ def freq_sweep_test(driver):
         sleep(.25)
 
 def noise_test(driver):
-    pass
+    driver.noise.reset_lfsr()
+    driver.noise.set_params(2,5,True)
+    driver.noise.enabled = True
+    sleep(4)
 
 if __name__ == "__main__":
     pre_init(44100, -16, 1, 1024)
@@ -594,4 +623,10 @@ if __name__ == "__main__":
     pygame.mixer.music.set_volume(0.05)
     pcm_stream.connect()
 
-    siren(pcm_stream)
+    # siren(pcm_stream)
+    noise_test(pcm_stream)
+
+    pcm_stream.disconnect()
+    print("exit")
+
+
