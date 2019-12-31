@@ -10,168 +10,6 @@ import wave
 import pygame
 from pygame.mixer import Sound, music, get_init, pre_init
 
-class SOUND(object):
-    def __init__(self, bus):
-        self.bus = bus
-
-        # Dummy regs for now
-        dummies = [
-            (0xFF10, "NR10", 0x80),
-            (0xFF11, "NR11", 0xBF),
-            (0xFF12, "NR12", 0xF3),
-            (0xFF13, "NR13", 0x00),
-            (0xFF14, "NR14", 0xBF),
-
-            (0xFF16, "NR21", 0x3F),
-            (0xFF17, "NR22", 0x00),
-            (0xFF18, "NR23", 0x00),
-            (0xFF19, "NR24", 0xBF),
-
-            (0xFF1A, "NR30", 0x7F),
-            (0xFF1B, "NR31", 0xFF),
-            (0xFF1C, "NR32", 0x9F),
-            (0xFF1D, "NR33", 0xBF), #TODO: docs are very inconsistent about NR33's address/init value; double check what's going on
-            (0xFF1E, "NR34", 0x00),
-
-            (0xFF30, "WAV0", 0x00),
-            (0xFF31, "WAV1", 0x00),
-            (0xFF32, "WAV2", 0x00),
-            (0xFF33, "WAV3", 0x00),
-            (0xFF34, "WAV4", 0x00),
-            (0xFF35, "WAV5", 0x00),
-            (0xFF36, "WAV6", 0x00),
-            (0xFF37, "WAV7", 0x00),
-            (0xFF38, "WAV8", 0x00),
-            (0xFF39, "WAV9", 0x00),
-            (0xFF3A, "WAV10", 0x00),
-            (0xFF3B, "WAV11", 0x00),
-            (0xFF3C, "WAV12", 0x00),
-            (0xFF3D, "WAV13", 0x00),
-            (0xFF3E, "WAV14", 0x00),
-            (0xFF3F, "WAV15", 0x00),
-
-            (0xFF20, "NR41", 0xFF),
-            (0xFF21, "NR42", 0x00),
-            (0xFF22, "NR43", 0x00),
-            (0xFF23, "NR44", 0xBF),
-
-            (0xFF24, "NR50", 0x77),
-            (0xFF25, "NR51", 0xF3),
-            (0xFF26, "NR52", 0xF1),
-        ]
-
-        for reg in dummies:
-            self.bus.attach(cpu.REG(reg[1], 8, init=reg[2]), reg[0], reg[0])    
-
-    # TODO: reset()
-    # TODO: duty cycle lookup table:
-    #   duty = {0:.125, 1:.25, 2:.5, 3:.75}[reg]
-
-class NoteSound(Sound):
-    # TODO: actually do this stuff
-    def __init__(self, frequency, volume=.1):
-        self.frequency = frequency
-        Sound.__init__(self, buffer=self.build_samples())
-        self.set_volume(volume)
-
-    def build_samples(self):
-        period = int(round(get_init()[0] / self.frequency))
-        samples = array("h", [0] * period)
-        amplitude = 2 ** (abs(get_init()[1]) - 1) - 1
-        for time in range(period):
-            if time < period / 2:
-                samples[time] = amplitude
-            else:
-                samples[time] = -amplitude
-        return samples
-
-# general pattern that data is read:
-# stream.tell(), read args (eg, size), read kwargs (eg, none) 
-# 0 (4,) {}
-# 4 (8,) {}
-# 0 (4,) {}
-# 0 (4,) {}
-# 4 (4,) {}
-# 8 (4,) {}
-# 12 (4,) {}
-# 16 (4,) {}
-# 20 (16,) {}
-# 36 (4,) {}
-# 40 (4,) {}
-# 44 (2048,) {}
-# 2092 (2048,) {}
-# 4140 (2048,) {}
-# 6188 (2048,) {}
-# 8236 (2048,) {}
-# ...
-# 77868 (2048,) {}
-# 79916 (2048,) {}
-# 81964 (2048,) {}
-# 84012 (2048,) {}
-# 86060 (2048,) {}
-# 88108 (136,) {}
-# 44 (1912,) {}
-# 1956 (2048,) {}
-# 4004 (2048,) {}
-# ...
-# 81828 (2048,) {}
-# 83876 (2048,) {}
-# 85924 (2048,) {}
-# 87972 (272,) {}
-# 44 (1776,) {}
-# ...
-
-class RawPCMStream(object):
-    def __init__(self, sample_rate = 44100, stereo = True, buffer_seconds = 1):
-        self.n_channels = {True: 2, False: 1}[stereo]
-        self.sample_rate = sample_rate
-        self.sample_bytes = 2
-        self.buffer_seconds = buffer_seconds
-
-        self.riff_buffer = io.BytesIO()
-
-        w = wave.open(self.riff_buffer, "wb")
-        w.setsampwidth(self.sample_bytes)
-        w.setnchannels(self.n_channels)
-        w.setframerate(self.sample_rate)
-        sentinel_value = b"\xDA\x7A"
-        w.writeframes(sentinel_value * int(self.sample_bytes * self.sample_rate * self.buffer_seconds / len(sentinel_value)))
-        w.close()
-        self.riff_buffer.seek(0)
-
-        self.riff_data_offset = self.riff_buffer.getvalue().index(sentinel_value)
-
-        self.data_buffer = self.riff_buffer.getbuffer()[self.riff_data_offset:].cast('h')
-
-    def sample_buffer(self):
-        return self.data_buffer
-
-    def tell(self, *args, **kwargs):
-        return self.riff_buffer.tell(*args, **kwargs)
-
-    def read(self, *args, **kwargs):
-        print(self.riff_buffer.tell(), args, kwargs)
-        return self.riff_buffer.read(*args, **kwargs)
-
-    def seek(self, *args, **kwargs):
-        return self.riff_buffer.seek(*args, **kwargs)
-
-    def connect(self):
-        pygame.mixer.music.load(self)
-        pygame.mixer.music.play(loops=-1)
-
-def wave_data(freq, n_seconds, data_buffer):
-    period = int(round(get_init()[0] / freq))
-    n_samples = get_init()[0] * n_seconds
-    amplitude = 2 ** (abs(get_init()[1]) - 1) - 1
-    for time in range(n_samples):
-        if (time % period) < period / 2:
-            data_buffer[time] = amplitude
-        else:
-            data_buffer[time] = -amplitude
-
-############################################################
-
 class SynthChannel(object):
     def __init__(self, sample_rate, stereo = True):
         self.sample_rate = sample_rate
@@ -463,6 +301,11 @@ class GameboyMixerStream(object):
         self.square_b = SquareChannel(sample_rate, stereo)
         self.noise = NoiseChannel(sample_rate, stereo)
 
+        self.master_volume = (1,1)
+
+    def set_master_volume(self, left, right):
+        self.master_volume = (left, right)
+
     def fill_data(self, n_words):
         if len(self._data_buffer) < n_words:
             self._data_buffer.extend([0]*n_words)
@@ -474,16 +317,23 @@ class GameboyMixerStream(object):
         ]
 
         max_value_unsigned = (2 ** (self._data_buffer.itemsize*8) - 1)
-        max_value_signed = max_value_unsigned // 2
 
-        for idx in range(n_words):
-            mix_normalized = 0
+        master_left_scale = max_value_unsigned * self.master_volume[0]
+        master_right_scale = max_value_unsigned * self.master_volume[1]
+
+        master_left_offset = (master_left_scale // 2) + 1
+        master_right_offset = (master_right_scale // 2) + 1
+
+        for idx in range(0,n_words,2):
+            mix_left_normalized = 0
+            mix_right_normalized = 0
             for sound in sounds:
                 if sound is not None:
-                    mix_normalized = mix_normalized + sound[idx] - mix_normalized*sound[idx]
-            mix_signed = int(mix_normalized * max_value_unsigned - max_value_signed - 1)
+                    mix_left_normalized = mix_left_normalized + sound[idx] - mix_left_normalized*sound[idx]
+                    mix_right_normalized = mix_right_normalized + sound[idx+1] - mix_right_normalized*sound[idx+1]
             # print(mix_signed)
-            self._data_buffer[idx] = mix_signed
+            self._data_buffer[idx] = int(mix_left_normalized * master_left_scale - master_left_offset)
+            self._data_buffer[idx+1] = int(mix_right_normalized * master_right_scale - master_right_offset)
 
     def tell(self):
         # print("tell",self.file_pos)
@@ -530,6 +380,165 @@ class GameboyMixerStream(object):
     def disconnect(self):
         pygame.mixer.music.stop()
 
+
+class SOUND(object):
+    def __init__(self, bus):
+        self.bus = bus
+        bus.attach(self, 0xFF10, 0xFF26)
+
+        self.pcm_stream = GameboyMixerStream(sample_rate = get_init()[0])
+        pcm_stream.connect()
+        # TODO: need to disconnect at some point
+
+        self.reg_values = {}
+
+    def reset(self):
+        defaults = [
+            (0xFF10, "NR10", 0x80),
+            (0xFF11, "NR11", 0xBF),
+            (0xFF12, "NR12", 0xF3),
+            (0xFF13, "NR13", 0x00),
+            (0xFF14, "NR14", 0xBF),
+
+            (0xFF16, "NR21", 0x3F),
+            (0xFF17, "NR22", 0x00),
+            (0xFF18, "NR23", 0x00),
+            (0xFF19, "NR24", 0xBF),
+
+            (0xFF1A, "NR30", 0x7F),
+            (0xFF1B, "NR31", 0xFF),
+            (0xFF1C, "NR32", 0x9F),
+            (0xFF1D, "NR33", 0xBF), #TODO: docs are very inconsistent about NR33's address/init value; double check what's going on
+            (0xFF1E, "NR34", 0x00),
+
+            (0xFF30, "WAV0", 0x00),
+            (0xFF31, "WAV1", 0x00),
+            (0xFF32, "WAV2", 0x00),
+            (0xFF33, "WAV3", 0x00),
+            (0xFF34, "WAV4", 0x00),
+            (0xFF35, "WAV5", 0x00),
+            (0xFF36, "WAV6", 0x00),
+            (0xFF37, "WAV7", 0x00),
+            (0xFF38, "WAV8", 0x00),
+            (0xFF39, "WAV9", 0x00),
+            (0xFF3A, "WAV10", 0x00),
+            (0xFF3B, "WAV11", 0x00),
+            (0xFF3C, "WAV12", 0x00),
+            (0xFF3D, "WAV13", 0x00),
+            (0xFF3E, "WAV14", 0x00),
+            (0xFF3F, "WAV15", 0x00),
+
+            (0xFF20, "NR41", 0xFF),
+            (0xFF21, "NR42", 0x00),
+            (0xFF22, "NR43", 0x00),
+            (0xFF23, "NR44", 0xBF),
+
+            (0xFF24, "NR50", 0x77),
+            (0xFF25, "NR51", 0xF3),
+            (0xFF26, "NR52", 0xF1),
+        ]
+        for default in defaults:
+            self.reg_values[default[0]-0xFF10] = default[2]
+        # TODO: reset actual audio units
+
+    def bus_read(self, addr):
+        # TODO:
+        # Reading NR52 yields the current power status and each channel's enabled status (from the length counter).
+        # Wave RAM reads back as the last value written.
+        # When an NRxx register is read back, the last written value ORed with the following is returned:
+        #      NRx0 NRx1 NRx2 NRx3 NRx4
+        #     ---------------------------
+        # NR1x  $80  $3F $00  $FF  $BF 
+        # NR2x  $FF  $3F $00  $FF  $BF 
+        # NR3x  $7F  $FF $9F  $FF  $BF 
+        # NR4x  $FF  $FF $00  $00  $BF 
+        # NR5x  $00  $00 $70
+        # $FF27-$FF2F always read back as $FF
+        # That is, the channel length counters, frequencies, and unused bits always read back as set to all 1s.
+
+        if addr == 0: # 0xFF10 NR10
+            # FF10 - NR10 - Channel 1 Sweep register (R/W)
+            #   Bit 6-4 - Sweep Time
+            #   Bit 3   - Sweep Increase/Decrease
+            #              0: Addition    (frequency increases)
+            #              1: Subtraction (frequency decreases)
+            #   Bit 2-0 - Number of sweep shift (n: 0-7)
+            # Sweep Time:
+            #   000: sweep off - no freq change
+            #   001: 7.8 ms  (1/128Hz)
+            #   010: 15.6 ms (2/128Hz)
+            #   011: 23.4 ms (3/128Hz)
+            #   100: 31.3 ms (4/128Hz)
+            #   101: 39.1 ms (5/128Hz)
+            #   110: 46.9 ms (6/128Hz)
+            #   111: 54.7 ms (7/128Hz)
+
+            # The change of frequency (NR13,NR14) at each shift is calculated by the following formula where X(0) is initial freq & X(t-1) is last freq:
+            #   X(t) = X(t-1) +/- X(t-1)/2^n
+            pass
+        elif addr == 1: # 0xFF10 NR11
+            #   Bit 7-6 - Wave Pattern Duty (Read/Write)
+            #   Bit 5-0 - Sound length data (Write Only) (t1: 0-63)
+            # Wave Duty:
+            #   00: 12.5% ( _-------_-------_------- )
+            #   01: 25%   ( __------__------__------ )
+            #   10: 50%   ( ____----____----____---- ) (normal)
+            #   11: 75%   ( ______--______--______-- )
+            # Sound Length = (64-t1)*(1/256) seconds
+            # The Length value is used only if Bit 6 in NR14 is set.
+            pass
+        elif addr == 2: # 0xFF10 NR12
+            #   Bit 7-4 - Initial Volume of envelope (0-0Fh) (0=No Sound)
+            #   Bit 3   - Envelope Direction (0=Decrease, 1=Increase)
+            #   Bit 2-0 - Number of envelope sweep (n: 0-7)
+            #             (If zero, stop envelope operation.)
+            # Length of 1 step = n*(1/64) seconds
+            pass
+        elif addr == 3: # 0xFF10 NR13
+            # Lower 8 bits of 11 bit frequency (x).
+            # Next 3 bit are in NR14 ($FF14)
+            pass
+        elif addr == 4: # 0xFF10 NR14
+            #   Bit 7   - Initial (1=Restart Sound)     (Write Only)
+            #   Bit 6   - Counter/consecutive selection (Read/Write)
+            #             (1=Stop output when length in NR11 expires)
+            #   Bit 2-0 - Frequency's higher 3 bits (x) (Write Only)
+            # Frequency = 131072/(2048-x) Hz
+            pass
+        elif addr == 20: # 0xFF24 NR50        
+            # Bit 7   - Output Vin to SO2 terminal (1=Enable)
+            # Bit 6-4 - SO2 output level (volume)  (0-7)
+            # Bit 3   - Output Vin to SO1 terminal (1=Enable)
+            # Bit 2-0 - SO1 output level (volume)  (0-7)
+            return self.reg_values[addr]
+        else:
+            raise Exception("audio driver doesn't know WHAT the fuck to do")
+
+
+    def bus_write(self, addr, value):
+        if addr == 20: # 0xFF24 NR50        
+            # NR50 FF24 ALLL BRRR Vin L enable, Left vol, Vin R enable, Right vol
+            self.reg_values[addr] = value
+            vol_r = (value & 0b111)//0b111
+            vol_l = ((value>>4) & 0b111)//0b111
+            self.pcm_stream.set_master_volume(vol_l, vol_r)
+        if addr == 21: # 0xFF25 NR51
+            # NR51 FF25 NW21 NW21 Left enables, Right enables
+            # TODO
+            pass
+        if addr == 22: # 0xFF26 NR52
+            # NR52 FF26 P--- NW21 Power control/status, Channel length statuses
+            # TODO
+            pass
+        else:
+            raise Exception("audio driver doesn't know WHAT the fuck to do")
+
+
+    # TODO: duty cycle lookup table:
+    #   duty = {0:.125, 1:.25, 2:.5, 3:.75}[reg]
+
+#################################
+# Sound tests:
 
 def flat_tone(driver):
     driver.square_a.freq=440
@@ -611,20 +620,20 @@ def freq_sweep_test(driver):
 
 def noise_test(driver):
     driver.noise.reset_lfsr()
-    driver.noise.set_params(2,5,True)
+    driver.noise.set_params(6,2,True)
     driver.noise.enabled = True
-    sleep(4)
+    sleep(2)
 
 if __name__ == "__main__":
     pre_init(44100, -16, 1, 1024)
     pygame.init()
 
     pcm_stream = GameboyMixerStream(sample_rate = get_init()[0])
-    pygame.mixer.music.set_volume(0.05)
+    pcm_stream.set_master_volume(0.05,0.05)
     pcm_stream.connect()
 
-    # siren(pcm_stream)
-    noise_test(pcm_stream)
+    siren(pcm_stream)
+    # noise_test(pcm_stream)
 
     pcm_stream.disconnect()
     print("exit")

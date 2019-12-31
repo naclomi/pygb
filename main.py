@@ -376,6 +376,7 @@ if __name__=="__main__":
         print("Logging to " + log_file)
         logger = gb_debug.Tee(log_file, "w")
 
+    pygame.mixer.pre_init(44100, -16, 1, 1024)
     pygame.init()
     pygame.display.set_caption("pygb")
     pygame.key.set_repeat(10, 10)
