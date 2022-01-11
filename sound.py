@@ -140,6 +140,7 @@ class SquareChannel(SynthChannel):
             if self._freq_sweep_counter <= 0:
                 self._freq_sweep_counter = self._freq_sweep_period
                 self._freq_sweep_effective += self._freq_sweep_coef * self._freq_sweep_effective
+                self.freq = self._freq_sweep_effective
             else:
                 self._freq_sweep_counter -= n_samples
 
@@ -249,7 +250,7 @@ class NoiseChannel(SynthChannel):
             else:
                 period_value = max_sample
            
-            for i in range(time, time + period_samples):
+            for i in range(int(time), int(time + period_samples)):
                 self._data_buffer[i*2] = period_value
                 self._data_buffer[i*2+1] = period_value
             time += period_samples
@@ -321,6 +322,7 @@ class GameboyMixerStream(object):
         master_left_scale = max_value_unsigned * self.master_volume[0]
         master_right_scale = max_value_unsigned * self.master_volume[1]
 
+        # TODO: this might produce weird results when master volume is 0 -- double-check
         master_left_offset = (master_left_scale // 2) + 1
         master_right_offset = (master_right_scale // 2) + 1
 
@@ -352,12 +354,12 @@ class GameboyMixerStream(object):
                 # print("bleed")
                 read_size_words = (size-len(self.riff_header)) // self._data_buffer.itemsize
                 self.fill_data(read_size_words)
-                output_bytes = self.riff_header[self.file_pos:] + self._data_buffer[:read_size_words].tostring()
+                output_bytes = self.riff_header[self.file_pos:] + self._data_buffer[:read_size_words].tobytes()
         else:
             # print("data")
             read_size_words = size // self._data_buffer.itemsize
             self.fill_data(read_size_words)
-            output_bytes = self._data_buffer[:read_size_words].tostring()
+            output_bytes = self._data_buffer[:read_size_words].tobytes()
 
         self.file_pos += size
         return output_bytes
@@ -457,6 +459,48 @@ class SOUND(object):
         # That is, the channel length counters, frequencies, and unused bits always read back as set to all 1s.
 
         if addr == 0: # 0xFF10 NR10
+            return self.reg_values[addr] | 0x80
+        elif addr == 1: # 0xFF10 NR11
+            #   Bit 7-6 - Wave Pattern Duty (Read/Write)
+            #   Bit 5-0 - Sound length data (Write Only) (t1: 0-63)
+            # Wave Duty:
+            #   00: 12.5% ( _-------_-------_------- )
+            #   01: 25%   ( __------__------__------ )
+            #   10: 50%   ( ____----____----____---- ) (normal)
+            #   11: 75%   ( ______--______--______-- )
+            # Sound Length = (64-t1)*(1/256) seconds
+            # The Length value is used only if Bit 6 in NR14 is set.
+            return self.reg_values[addr] | 0x3F
+        elif addr == 2: # 0xFF10 NR12
+            #   Bit 7-4 - Initial Volume of envelope (0-0Fh) (0=No Sound)
+            #   Bit 3   - Envelope Direction (0=Decrease, 1=Increase)
+            #   Bit 2-0 - Number of envelope sweep (n: 0-7)
+            #             (If zero, stop envelope operation.)
+            # Length of 1 step = n*(1/64) seconds
+            return self.reg_values[addr]
+        elif addr == 3: # 0xFF10 NR13
+            # Lower 8 bits of 11 bit frequency (x).
+            # Next 3 bit are in NR14 ($FF14)
+            return 0xFF
+        elif addr == 4: # 0xFF10 NR14
+            #   Bit 7   - Initial (1=Restart Sound)     (Write Only)
+            #   Bit 6   - Counter/consecutive selection (Read/Write)
+            #             (1=Stop output when length in NR11 expires)
+            #   Bit 2-0 - Frequency's higher 3 bits (x) (Write Only)
+            # Frequency = 131072/(2048-x) Hz
+            return self.reg_values[addr] | 0xBF
+        elif addr == 20: # 0xFF24 NR50        
+            # Bit 7   - Output Vin to SO2 terminal (1=Enable)
+            # Bit 6-4 - SO2 output level (volume)  (0-7)
+            # Bit 3   - Output Vin to SO1 terminal (1=Enable)
+            # Bit 2-0 - SO1 output level (volume)  (0-7)
+            return self.reg_values[addr]
+        else:
+            raise Exception("audio driver doesn't know WHAT the fuck to do")
+
+
+    def bus_write(self, addr, value):
+        if addr == 0: # 0xFF10 NR10
             # FF10 - NR10 - Channel 1 Sweep register (R/W)
             #   Bit 6-4 - Sweep Time
             #   Bit 3   - Sweep Increase/Decrease
@@ -475,7 +519,12 @@ class SOUND(object):
 
             # The change of frequency (NR13,NR14) at each shift is calculated by the following formula where X(0) is initial freq & X(t-1) is last freq:
             #   X(t) = X(t-1) +/- X(t-1)/2^n
-            pass
+            self.reg_values[addr] = value & 0xFF
+            coef = 1/(2**(value & 0b111))
+            if (value & 0b1000) != 0:
+                coef = -coef
+            period = ((value >> 4) & 0b111) / 128
+            self.pcm_stream.square_a.set_freq_sweep(coef, period)
         elif addr == 1: # 0xFF10 NR11
             #   Bit 7-6 - Wave Pattern Duty (Read/Write)
             #   Bit 5-0 - Sound length data (Write Only) (t1: 0-63)
@@ -486,6 +535,10 @@ class SOUND(object):
             #   11: 75%   ( ______--______--______-- )
             # Sound Length = (64-t1)*(1/256) seconds
             # The Length value is used only if Bit 6 in NR14 is set.
+            self.reg_values[addr] = value & 0xFF
+            duty_code = (value>>6) & 0x03
+            duty_value = [.125, .25, .5, .75][duty_code]
+            self.pcm_stream.square_a.duty = duty_value
             pass
         elif addr == 2: # 0xFF10 NR12
             #   Bit 7-4 - Initial Volume of envelope (0-0Fh) (0=No Sound)
@@ -506,19 +559,8 @@ class SOUND(object):
             # Frequency = 131072/(2048-x) Hz
             pass
         elif addr == 20: # 0xFF24 NR50        
-            # Bit 7   - Output Vin to SO2 terminal (1=Enable)
-            # Bit 6-4 - SO2 output level (volume)  (0-7)
-            # Bit 3   - Output Vin to SO1 terminal (1=Enable)
-            # Bit 2-0 - SO1 output level (volume)  (0-7)
-            return self.reg_values[addr]
-        else:
-            raise Exception("audio driver doesn't know WHAT the fuck to do")
-
-
-    def bus_write(self, addr, value):
-        if addr == 20: # 0xFF24 NR50        
             # NR50 FF24 ALLL BRRR Vin L enable, Left vol, Vin R enable, Right vol
-            self.reg_values[addr] = value
+            self.reg_values[addr] = value & 0xFF
             vol_r = (value & 0b111)//0b111
             vol_l = ((value>>4) & 0b111)//0b111
             self.pcm_stream.set_master_volume(vol_l, vol_r)
@@ -625,17 +667,27 @@ def noise_test(driver):
     sleep(2)
 
 if __name__ == "__main__":
-    pre_init(44100, -16, 1, 1024)
-    pygame.init()
+    import sys
 
-    pcm_stream = GameboyMixerStream(sample_rate = get_init()[0])
-    pcm_stream.set_master_volume(0.05,0.05)
-    pcm_stream.connect()
 
-    siren(pcm_stream)
-    # noise_test(pcm_stream)
+    tests = [siren, noise_test, freq_sweep_test, volume_envelope_test, duration_train, duty_sweep, flat_chord, flat_tone]
+    if len(sys.argv) >= 2:
+        pre_init(44100, -16, 1, 1024)
+        pygame.init()
 
-    pcm_stream.disconnect()
-    print("exit")
+        pcm_stream = GameboyMixerStream(sample_rate = get_init()[0])
+        pcm_stream.set_master_volume(0.05,0.05)
+        pcm_stream.connect()
+
+        for test_idx in sys.argv[1:]:
+            tests[int(test_idx,0)](pcm_stream)
+
+        pcm_stream.disconnect()
+        print("exit")
+    else:
+        print("usage: {:} TEST_NUMBER ...".format(sys.argv[0]))
+        print("Available tests:")
+        for idx, test in enumerate(tests):
+            print(str(idx) + ". " + test.__name__)
 
 
